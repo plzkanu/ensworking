@@ -1,0 +1,2760 @@
+
+/* ══════════════════════════════════════════════════════════════════
+   OLE2 Compound File Parser (순수 JS, DataView 범위 오류 없음)
+   검증된 구조: sector size=512, Section0=normal stream (size>4096)
+══════════════════════════════════════════════════════════════════ */
+function parseOLE2(ab) {
+  const u8  = new Uint8Array(ab);
+  const dv  = new DataView(ab);
+  const len = u8.length;
+
+  const u16 = o => dv.getUint16(o, true);
+  const u32 = o => dv.getUint32(o, true);
+  const i32 = o => dv.getInt32(o, true);
+
+  const SS  = 1 << u16(0x1E);   // 512
+  const MSS = 1 << u16(0x20);   // 64
+  const NFAT    = u32(0x2C);
+  const MF_START= i32(0x3C);
+  const MINI_CUT= u32(0x38);    // 4096
+  const DIR_SEC = u32(0x30);
+
+  // ── FAT 구성 ──────────────────────────────────────────────────
+  const fat = new Int32Array(Math.ceil(len / SS));
+  for (let k = 0; k < NFAT && k < 109; k++) {
+    const s = u32(0x4C + k * 4);
+    if (s >= 0xFFFFFFFC) break;          // FREESECT / ENDOFCHAIN
+    const base = (s + 1) * SS;
+    if (base + SS > len) break;
+    for (let j = 0; j < SS / 4; j++) fat[k * (SS/4) + j] = i32(base + j * 4);
+  }
+
+  // ── 섹터 체인 읽기 (normal stream) ───────────────────────────
+  function readChain(startSec, size) {
+    const out = new Uint8Array(size);
+    let pos = 0, sec = startSec;
+    while (sec >= 0 && sec < 0xFFFFFFFE && pos < size) {
+      const base = (sec + 1) * SS;
+      if (base >= len) break;
+      const take = Math.min(SS, size - pos);
+      out.set(u8.subarray(base, base + take), pos);
+      pos += take;
+      sec = fat[sec] ?? -1;
+    }
+    return out;
+  }
+
+  // ── Mini FAT + Mini Stream ────────────────────────────────────
+  let miniFAT = null, miniStream = null;
+
+  function ensureMini(rootStart, rootSize) {
+    if (miniStream) return;
+    miniStream = readChain(rootStart, rootSize);
+    miniFAT = [];
+    let s = MF_START;
+    while (s >= 0 && s < 0xFFFFFFFE) {
+      const base = (s + 1) * SS;
+      if (base + SS > len) break;
+      for (let j = 0; j < SS / 4; j++) {
+        const v = i32(base + j * 4);
+        miniFAT.push(v);
+      }
+      s = fat[s] ?? -1;
+    }
+  }
+
+  function readMiniChain(start, size, rootStart, rootSize) {
+    ensureMini(rootStart, rootSize);
+    const out = new Uint8Array(size);
+    let pos = 0, sec = start;
+    while (sec >= 0 && sec < 0xFFFFFFFE && pos < size) {
+      const base = sec * MSS;
+      if (base >= miniStream.length) break;
+      const take = Math.min(MSS, size - pos);
+      out.set(miniStream.subarray(base, base + take), pos);
+      pos += take;
+      sec = miniFAT[sec] ?? -1;
+    }
+    return out;
+  }
+
+  // ── 디렉토리 엔트리 파싱 ─────────────────────────────────────
+  const entries = [];
+  let rootStart = -1, rootSize = 0;
+  const visited = new Set();
+  let sec = DIR_SEC;
+
+  while (sec >= 0 && sec < 0xFFFFFFFE && !visited.has(sec)) {
+    visited.add(sec);
+    const base = (sec + 1) * SS;
+    if (base + SS > len) break;
+    for (let k = 0; k < SS / 128; k++) {
+      const o = base + k * 128;
+      const nl = u16(o + 0x40);
+      if (!nl) { entries.push(null); continue; }
+      let name = '';
+      for (let j = 0; j < (nl - 2) / 2; j++) name += String.fromCharCode(u16(o + j * 2));
+      const type  = u8[o + 0x42];
+      const start = i32(o + 0x74);
+      const size  = u32(o + 0x78);
+      entries.push({ name, type, start, size });
+      if (type === 5) { rootStart = start; rootSize = size; } // Root Entry
+    }
+    sec = fat[sec] ?? -1;
+  }
+
+  // ── 스트림 반환 ───────────────────────────────────────────────
+  function getStream(name) {
+    const e = entries.find(d => d && d.type === 2 && d.name === name);
+    if (!e) return null;
+    if (e.size < MINI_CUT && rootStart >= 0) {
+      return readMiniChain(e.start, e.size, rootStart, rootSize);
+    }
+    return readChain(e.start, e.size);
+  }
+
+  return { getStream };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   zlib raw inflate → pako.inflateRaw (trailing junk 허용)
+══════════════════════════════════════════════════════════════════ */
+function inflateRaw(u8) {
+  // pako.inflateRaw: trailing junk 있어도 안전하게 처리
+  try {
+    return pako.inflateRaw(u8);
+  } catch(e) {
+    throw new Error('압축 해제 오류: ' + e.message);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   HWP5 레코드 파싱 → TagID=67(PARA_TEXT) 텍스트 추출
+══════════════════════════════════════════════════════════════════ */
+const PAGE_BREAK_TOKEN = '\x01__PGBRK__\x01';
+const CELL_TOKEN       = '\x01__CELL__\x01';   // 테이블 셀 1개 = LIST_HEADER(tag=72)
+
+function hwp5Texts(raw) {
+  const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+
+  function parse(multiMode) {
+    const texts     = [];
+    const cellAtIdx = [];
+    let tblCount    = 0;
+    let inMainTable = false;
+    let curPageCell = 0;
+    let i = 0;
+    while (i + 4 <= raw.length) {
+      const hdr   = dv.getUint32(i, true);
+      const tagId = hdr & 0x3FF;
+      let   size  = (hdr >>> 20) & 0xFFF;
+      i += 4;
+      if (size === 0xFFF) {
+        if (i + 4 > raw.length) break;
+        size = dv.getUint32(i, true); i += 4;
+      }
+      const end = i + size;
+      if (end > raw.length) break;
+
+      if (tagId === 71 && size >= 4) {  // HWPTAG_CTRL_HEADER
+        const ctrlId = dv.getUint32(i, true);
+        if (ctrlId === 0x74626c20) {  // 'tbl '
+          tblCount++;
+          if (multiMode) {
+            // 각 표가 독립 페이지 (한울1사업소 등)
+            // tbl#1(결재란)+tbl#2(데이터)는 같은 물리 페이지
+            if (tblCount === 1) {
+              texts.push(PAGE_BREAK_TOKEN); cellAtIdx.push(0);
+              inMainTable = false; curPageCell = 0;
+            } else if (tblCount === 2) {
+              inMainTable = true; // 결재란과 같은 페이지
+            } else {
+              texts.push(PAGE_BREAK_TOKEN); cellAtIdx.push(0);
+              inMainTable = true; curPageCell = 0;
+            }
+          } else {
+            // 홀수=결재란(break), 짝수=데이터 (고리1사업소 등)
+            if (tblCount % 2 === 1) {
+              texts.push(PAGE_BREAK_TOKEN); cellAtIdx.push(0);
+              inMainTable = false; curPageCell = 0;
+            } else {
+              inMainTable = true;
+            }
+          }
+        }
+      }
+
+      if (tagId === 72 && inMainTable) curPageCell++;
+
+      if (tagId === 67 && size >= 2) {
+        const chars = [];
+        for (let j = i; j + 1 < end; j += 2) {
+          const cp = dv.getUint16(j, true);
+          if (cp === 0) break;
+          if (cp >= 0x20) chars.push(String.fromCharCode(cp));
+          else if (cp === 0x0B) chars.push('\t');
+        }
+        const t = chars.join('').trim();
+        if (t) { texts.push(t); cellAtIdx.push(curPageCell); }
+      }
+      i = end;
+    }
+    return { texts, cellAtIdx };
+  }
+
+  // 1차: 기본 파싱
+  const result = parse(false);
+
+  // 홀수 표(cellAtIdx=0)에 사번(6자리)이 있으면 표마다 별도 페이지인 서식
+  const hasOddEmpNo = result.texts.some(
+    (t, idx) => result.cellAtIdx[idx] === 0 && /^\d{6}$/.test(t)
+  );
+  if (hasOddEmpNo) return parse(true);
+  return result;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   레코드 추출
+   컬럼 순서: 순번 → 이름 → 사번(6자리) → 날짜 → 시작 → 종료 → 시간수
+              → 평일야간출근(V?) → 휴일조기출근(V?) → 근무내용(무시)
+══════════════════════════════════════════════════════════════════ */
+function extractRecs(texts, cellAtIdx, label) {
+  const SEQ   = /^\d{1,3}$/;
+  const EMP   = /^\d{6}$/;
+  // 구분자가 '-'/'.'/'/ '로 섞여 있거나(예: 2026.05-23) 월/일이 한 자리인 경우도 날짜로 인식
+  const DT_LOOSE = /^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/;
+  const normDate = s => {
+    const m = DT_LOOSE.exec((s || '').trim());
+    if (!m) return null;
+    return `${m[1]}-${String(+m[2]).padStart(2, '0')}-${String(+m[3]).padStart(2, '0')}`;
+  };
+  const TM    = /^\d{2}:\d{2}$/;
+  const HR    = /^\d+(\.\d)?$/;
+  const isCheck = tok => tok === 'V' || tok === 'v' || tok === 'Ｖ' || tok === '√' || tok === '✓' || tok === '☑';
+
+  const NUM_COLS = 10; // 근무일지 표 열 수
+  const recs  = [];
+  let pageCounter = 0;
+  let currentPage = 0;
+
+  for (let i = 0; i < texts.length - 5; i++) {
+    if (texts[i] === PAGE_BREAK_TOKEN) { pageCounter++; currentPage = pageCounter; continue; }
+    const seqTok = (texts[i] || '').trim();
+    const hasSeq = SEQ.test(seqTok);
+
+    // 순번 있는 경우: [순번, 이름, 사번, 날짜, 시작, 종료, 시간수]
+    // 순번 없는 경우(마케팅본부): [이름, 사번, 날짜, 시작, 종료, 시간수]
+    let seq, name, empno, date, start, end_t, hours, noSeq;
+    if (hasSeq) {
+      seq   = parseInt(seqTok);
+      if (seq < 1) continue;
+      name  = texts[i+1];
+      empno = texts[i+2];
+      date  = texts[i+3];
+      start = texts[i+4];
+      end_t = texts[i+5];
+      hours = texts[i+6];
+      noSeq = false;
+    } else {
+      // 순번 없는 패턴: texts[i]가 이름, texts[i+1]이 사번(6자리), texts[i+2]가 날짜
+      // 단, 직전 토큰이 순번이면 이미 파싱된 레코드의 이름 위치이므로 건너뜀(중복 방지)
+      if (i > 0 && SEQ.test((texts[i-1] || '').trim())) continue;
+      if (!EMP.test(texts[i+1])) continue;
+      if (!normDate(texts[i+2])) continue;
+      seq   = 0;
+      name  = seqTok;
+      empno = texts[i+1];
+      date  = texts[i+2];
+      start = texts[i+3];
+      end_t = texts[i+4];
+      hours = texts[i+5];
+      noSeq = true;
+    }
+
+    // 사번이 깨진 경우(HWP 바이트 오디코딩) → 이름으로 사원명부에서 사번 보완, 실패해도 누락하지 않음
+    let _empnoBroken = false;
+    if (!EMP.test(empno)) {
+      const matches = masterByName[name];
+      if (matches && matches.length === 1 && EMP.test(matches[0].empno)) {
+        empno = matches[0].empno; // 사원명부에서 자동 보완
+      } else {
+        empno = '000000'; // 임시 사번으로 누락 방지
+        _empnoBroken = true;
+      }
+    }
+    const normDateVal = normDate(date);
+    if (!normDateVal)     continue;
+    date = normDateVal; // 구분자가 섞인 날짜(예: 2026.05-23)를 표준 ISO 형식으로 정규화
+    if (!TM.test(start))  continue;
+    if (!TM.test(end_t))  continue;
+    if (!HR.test(hours))  continue;
+    if (!name || name.length < 2) continue;
+
+    // 평일야간(tok7), 휴일조기(tok8) — 순번 없는 경우 offset이 1씩 앞당겨짐
+    const off = noSeq ? 6 : 7;
+    const tok7 = (texts[i+off]   || '').trim();
+    const tok8 = (texts[i+off+1] || '').trim();
+
+    const isNextSeq = t => !noSeq && SEQ.test(t) && parseInt(t) === seq + 1;
+    const isDate    = t => !!normDate(t);
+
+    // V가 tok7 하나만 있을 때: 빈 셀 생략으로 평일야간(7)과 휴일조기(8) 구분 불가.
+    // cellAtIdx 기반으로 V가 있는 실제 셀 번호를 확인 → name 기준 +6=평일야간, +7=휴일조기
+    let nightWork, holidayEarly;
+    const bothV = isCheck(tok7) && isCheck(tok8);
+    const onlyV = isCheck(tok7) && !isCheck(tok8) && !isNextSeq(tok7) && !isDate(tok7);
+    if (bothV) {
+      nightWork = true; holidayEarly = true;
+    } else if (onlyV) {
+      const nameIdx   = noSeq ? i : i + 1;
+      const nameCellI = cellAtIdx[nameIdx] || 0;
+      const vCellI    = cellAtIdx[i + off] || 0;
+      if (nameCellI && vCellI) {
+        // cellAtIdx로 어느 열인지 정확히 판별
+        const diff = vCellI - nameCellI;
+        if (diff === 7) { holidayEarly = true;  nightWork = false; }      // 조기(name+7)
+        else            { nightWork    = true;   holidayEarly = false; }  // 야간(name+6) 또는 불명확
+      } else {
+        // cellAtIdx 없을 때 휴일/주말 휴리스틱 유지
+        const dow = date ? new Date(date).getDay() : -1;
+        const isWeekend = dow === 0 || dow === 6;
+        const isHoliday = !!(HOLIDAYS[date] || getCustomHolidays()[date]);
+        holidayEarly = isWeekend || isHoliday;
+        nightWork    = !holidayEarly;
+      }
+    } else {
+      nightWork    = !isNextSeq(tok7) && !isDate(tok7) && isCheck(tok7);
+      holidayEarly = !isNextSeq(tok8) && !isDate(tok8) && isCheck(tok8);
+    }
+
+    if (currentPage === 0) currentPage = 1;
+    const _pageNo = currentPage;
+    const _cellAtIdx = cellAtIdx[i] || 0;
+    const _rowNo = Math.ceil(_cellAtIdx / NUM_COLS) - 1;
+
+    const vCount = bothV ? 2 : (onlyV ? 1 : 0);
+    let content = (texts[i + off + vCount] || '').trim();
+    if (content === PAGE_BREAK_TOKEN || SEQ.test(content) || EMP.test(content) || normDate(content)) content = '';
+
+    const hrsVal = parseFloat(hours);
+
+    // ERP 30분 격자 스냅 (근무시간=시간수는 유지, 시각만 :00/:30로 보정)
+    const _snStart = snapStart(start), _snEnd = snapEnd(end_t);
+    const _timeSnapped = (_snStart !== start) || (_snEnd !== end_t);
+    start = _snStart; end_t = _snEnd;
+
+    recs.push({ seq, name, empno, date, start, end: end_t,
+                hours: hrsVal, _timeSnapped,
+                holiday_early: holidayEarly,
+                night_work: nightWork,
+                _origHol: holidayEarly,
+                _origNight: nightWork,
+                _empnoBroken,
+                content,
+                file: label, _pageNo, _rowNo });
+  }
+  return recs;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   HWP 파일 처리
+══════════════════════════════════════════════════════════════════ */
+async function parseHWP(ab, label) {
+  let ole;
+  try { ole = parseOLE2(ab); }
+  catch(e) { throw new Error('OLE2 파싱 오류: ' + e.message); }
+
+  const compressed = ole.getStream('Section0');
+  if (!compressed) throw new Error('Section0 스트림을 찾을 수 없습니다.');
+
+  let raw;
+  try { raw = inflateRaw(compressed); }
+  catch(e) { throw new Error('압축 해제 오류: ' + e.message); }
+
+  const { texts, cellAtIdx } = hwp5Texts(raw);
+  if (!texts.length) throw new Error('텍스트를 추출할 수 없습니다.');
+
+  const recs = extractRecs(texts, cellAtIdx, label);
+  if (!recs.length) {
+    console.log('추출된 텍스트 샘플:', texts.slice(0, 50));
+    throw new Error(`레코드를 파싱할 수 없습니다. (텍스트 ${texts.length}개 추출됨)\n표 구조가 다르거나 데이터 형식이 맞지 않을 수 있습니다.`);
+  }
+  return recs;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   PDF 내보내기 (인쇄 다이얼로그 활용)
+══════════════════════════════════════════════════════════════════ */
+function downloadPDF() {
+  if (!RECORDS.length) { alert('파싱된 데이터가 없습니다.'); return; }
+
+  const fl = getF();
+  const now = new Date();
+  const stamp = `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,'0')}.${String(now.getDate()).padStart(2,'0')}`;
+
+  const DAY_KR2 = ['일','월','화','수','목','금','토'];
+
+  const rows = fl.map((r, idx) => {
+    const hol = r.holiday_early;
+    const info = getInfo(r.empno);
+    const dept = info ? info.dept || '-' : '-';
+    let dayKr = '-';
+    if (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) {
+      const dt = new Date(r.date + 'T00:00:00');
+      dayKr = DAY_KR2[dt.getDay()];
+    }
+    const ch = getCustomHolidays();
+    const isWeekend = r.date && (() => {
+      const dt2 = new Date(r.date + 'T00:00:00');
+      const dow2 = dt2.getDay();
+      return dow2 === 0 || dow2 === 6 || !!HOLIDAYS[r.date] || !!ch[r.date];
+    })();
+    const isBefore9 = r.start && r.start < '09:00';
+    // 휴일 09:00 이전 출근인데 미체크(조기출근 누락 가능)일 때만 경고. 9시 이후는 정상 일반시간외.
+    const holMissing = isWeekend && isBefore9 && !hol;
+    const typeLabel = hol
+      ? '<span style="color:#F04452;font-weight:700">휴일조기출근</span>'
+      : holMissing
+        ? '<span style="color:#FF9500;font-weight:700">일반시간외 ⚠️</span>'
+        : '일반시간외';
+    return `<tr style="${idx%2===0 ? 'background:#EBF3FE' : ''}">
+      <td style="text-align:center">${idx+1}</td>
+      <td style="font-weight:600">${r.name}</td>
+      <td style="font-size:11px">${dept}</td>
+      <td style="font-family:monospace">${r.empno}</td>
+      <td>${r.date}</td>
+      <td style="text-align:center">${dayKr}</td>
+      <td style="text-align:center;font-family:monospace">${r.start}</td>
+      <td style="text-align:center;font-family:monospace">${r.end}</td>
+      <td style="text-align:center;font-weight:700">${r.hours}</td>
+      <td>${typeLabel}</td>
+      <td style="font-size:10px;color:#8B95A1">${r.file}</td>
+    </tr>`;
+  }).join('');
+
+  const total = fl.length;
+  const holiday = fl.filter(r => r.holiday_early).length;
+  const normal = total - holiday;
+
+  const html = `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>시간외근무 목록_${stamp}</title>
+<style>
+  @page { size: A4 landscape; margin: 15mm 12mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: '맑은 고딕', 'Malgun Gothic', sans-serif; font-size: 11px; color: #191F28; }
+  .title { font-size: 16px; font-weight: 800; margin-bottom: 4px; }
+  .sub { font-size: 11px; color: #4E5968; margin-bottom: 12px; }
+  .stats { display: flex; gap: 16px; margin-bottom: 14px; }
+  .stat { background: #EBF3FE; border-radius: 8px; padding: 6px 14px; font-size: 11px; }
+  .stat strong { font-size: 14px; color: #3182F6; }
+  table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  thead th { background: #3182F6; color: #fff; padding: 6px 7px; text-align: left; font-size: 10px; font-weight: 700; border: 1px solid #2170D8; }
+  tbody td { padding: 5px 7px; border: 1px solid #E2E5EA; vertical-align: middle; }
+  .footer { margin-top: 10px; font-size: 10px; color: #8B95A1; text-align: right; }
+</style>
+</head><body>
+  <div class="title">📋 시간외근무 입력 목록</div>
+  <div class="sub">출력일: ${stamp} &nbsp;|&nbsp; 수산이앤에스</div>
+  <div class="stats">
+    <div class="stat">전체 <strong>${total}</strong>건</div>
+    <div class="stat">일반시간외 <strong>${normal}</strong>건</div>
+    <div class="stat" style="background:#FEF0F1"><strong style="color:#F04452">${holiday}</strong>건 휴일조기출근</div>
+  </div>
+  <table>
+    <thead><tr>
+      <th style="width:24px">#</th>
+      <th style="width:52px">이름</th><th>부서</th>
+      <th style="width:58px">사번</th><th style="width:80px">근무일자</th>
+      <th style="width:28px">요일</th><th style="width:44px">시작</th>
+      <th style="width:44px">종료</th><th style="width:38px">시간수</th>
+      <th style="width:90px">근무유형</th><th>파일</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="footer">※ 이 문서는 시간외근무 ERP 입력 보조 도구에서 자동 생성되었습니다.</div>
+  <script>window.onload=()=>{window.print();}<\/script>
+</body></html>`;
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, '_blank');
+  if (!w) alert('팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   파일 UI
+══════════════════════════════════════════════════════════════════ */
+let hwpFiles = [], RECORDS = [], deletedRecords = [], ERR_ROWS = [];
+
+function dg(e, on) { e.preventDefault(); document.getElementById('dz').classList.toggle('drag', !!on); }
+function dp(e) { e.preventDefault(); dg(e,0); addF(e.dataTransfer.files); }
+function mDrag(e, on) {
+  e.preventDefault();
+  const dz = document.getElementById('mDz');
+  dz.style.borderColor = on ? 'var(--blue)' : 'var(--line)';
+  dz.style.background  = on ? 'var(--blue-bg)' : 'var(--bg)';
+}
+function mDrop(e) {
+  e.preventDefault();
+  mDrag(e, 0);
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  const ext = f.name.split('.').pop().toLowerCase();
+  if (ext !== 'xlsx' && ext !== 'xls') { alert('엑셀 파일(.xlsx, .xls)만 업로드 가능합니다.'); return; }
+  loadMaster({ files: [f] });
+}
+
+function addF(list) {
+  if (!list || list.length === 0) return;
+  let skipped = [];
+  for (const f of list) {
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (ext !== 'hwp') { skipped.push(f.name); continue; }
+    if (hwpFiles.find(x => x.file.name === f.name)) continue;
+    let label = f.name.replace(/\.[^.]+$/, '');
+    const baseName = label;
+    // "시간" 키워드 직전까지의 부서/현장명 추출
+    const mShort = baseName.match(/(\d{4})년\s*(\d{1,2})월\s+([\s\S]+?)(?=\s*시간)/i);
+    if (mShort) {
+      let site = mShort[3].trim();
+
+      // 파일명 끝 _접미사 처리: 공항/이매 같은 구분자는 추가, R1 등은 제거, 날짜형은 무시
+      const lastUnder = baseName.lastIndexOf('_');
+      if (lastUnder > 0) {
+        const suffix = baseName.slice(lastUnder + 1).trim();
+        const isDateLike = /\d{4}년/.test(suffix) || /['"]?\d{2,4}[\.\-]/.test(suffix);
+        if (suffix && suffix.length <= 15 && !isDateLike) {
+          const cleanSuffix = suffix.replace(/R\d+$/i, '').trim(); // R1, R2 등 제거
+          if (cleanSuffix && !site.includes(cleanSuffix)) {
+            site += ' ' + cleanSuffix;
+          }
+        }
+      }
+
+      // 불필요한 상위 조직명 제거
+      site = site.replace(/^시스템연구소\s+/, '');        // 시스템연구소 제거
+      site = site.replace(/^사업본부\s+(?!\()/, '');       // '사업본부 정비기술센터...' → '정비기술센터...' (괄호형은 유지)
+
+      label = `${mShort[1]}년 ${parseInt(mShort[2])}월 ${site}`;
+    }
+    hwpFiles.push({ file: f, label });
+  }
+  if (skipped.length) {
+    alert(`⚠️ HWP 파일만 업로드 가능합니다.\n건너뜀: ${skipped.join(', ')}`);
+  }
+  renderFL();
+  updateParseButtons();
+}
+function removeF(i) { hwpFiles.splice(i,1); renderFL(); updateParseButtons(); }
+function clearAll() {
+  if (!confirm('업로드된 파일 목록을 모두 삭제하시겠습니까?')) return;
+  hwpFiles = [];
+  renderFL(); updateParseButtons();
+}
+function updateParseButtons() {
+  document.getElementById('pBtn').disabled = !hwpFiles.length;
+  document.getElementById('clrBtn').disabled = !hwpFiles.length;
+}
+function renderFL() {
+  document.getElementById('flist').innerHTML = hwpFiles.map((x,i) => `
+    <div class="fc">
+      <span class="fcn">📄 ${x.file.name}</span>
+      <span class="fclb">${x.label}</span>
+      <span class="fcd" onclick="removeF(${i})">✕</span>
+    </div>`).join('');
+  document.getElementById('dz').classList.toggle('ok', !!hwpFiles.length);
+  document.getElementById('dzLabel').textContent = hwpFiles.length
+    ? hwpFiles.length+'개 선택됨'
+    : '파일 선택 또는 여기에 드래그';
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   근무시간 분리
+   - 시작시간 + 근무시간수 → 실제 종료시간 재계산
+   - 휴게시간(12~13, 18~19) 구간이 걸리면 행 분리
+   - 야간(22:00~06:00) 구간은 휴게 미적용
+══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════
+   근무시간 분리
+   - 시작~종료 구간의 실질 근무시간(휴게 제외)과 입력 근무시간이
+     다를 때만 분리 적용
+   - 휴게시간(12~13, 18~19) 구간이 걸리면 행 분리
+   - 22:00~06:00 야간 구간은 휴게 미적용
+══════════════════════════════════════════════════════════════════ */
+function toMin(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+function toHHMM(absMin) {
+  const m = ((absMin % 1440) + 1440) % 1440;
+  return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
+}
+// 시간수를 0.5시간(30분) 단위로 반올림 — ERP 소수점(.1/.3/.8 등) 방지
+function round05(hours) { return Math.round(hours * 2) / 2; }
+
+// ── ERP 30분 격자 스냅 ──────────────────────────────────────────
+// ERP는 :00/:30만 인식하므로 근무일지 시각을 30분 격자로 보정한다(근무시간=시간수는 유지).
+// 시작: 올림 / 종료: 올림하되, 올림이 야간(22:00~06:00)을 새로 만들어 배수를
+//       틀어지게 하면 내림(버림) — 야간 배수 보호 우선.
+function snap30(mins, dir) {
+  if (mins % 30 === 0) return mins;
+  return dir === 'floor' ? Math.floor(mins / 30) * 30 : Math.ceil(mins / 30) * 30;
+}
+function minToHM(mins) {                        // 1440분은 24:00로 보존(야간 종료 표기)
+  if (mins === 1440) return '24:00';
+  const m = ((mins % 1440) + 1440) % 1440;
+  return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+}
+function intervalHasNight(a, b) {               // [a,b) 안에 야간(22:00~06:00) 분이 있나
+  for (let t = a; t < b; t++) {
+    const loc = ((t % 1440) + 1440) % 1440;
+    if (loc >= 22 * 60 || loc < 6 * 60) return true;
+  }
+  return false;
+}
+function snapStart(hhmm) { return minToHM(snap30(toMin(hhmm), 'ceil')); }
+function snapEnd(hhmm) {
+  const e = toMin(hhmm);
+  const ce = snap30(e, 'ceil');
+  if (ce === e) return hhmm;                     // 이미 격자면 원문 유지
+  if (intervalHasNight(e, ce)) return minToHM(snap30(e, 'floor'));  // 올림이 야간 생성 → 내림
+  return minToHM(ce);
+}
+
+// 휴게구간을 절대 분으로 변환 (startMin 기준으로 당일/익일 판단)
+function getBreaksAbs(startMin) {
+  const RAW = [{s:12*60, e:13*60}, {s:18*60, e:19*60}];
+  return RAW.map(b => {
+    let s = b.s, e = b.e;
+    if (s < startMin) { s += 1440; e += 1440; }
+    return {s, e};
+  });
+}
+
+// 시프트 [startMin,endMin] 안의 야간(22:00~06:00) 구간을 절대 분 [s,e][]로 반환(병합)
+function nightIntervals(startMin, endMin) {
+  const res = [];
+  const from = Math.floor(startMin / 1440) - 1;
+  const to   = Math.floor(endMin   / 1440) + 1;
+  for (let k = from; k <= to; k++) {
+    const base = k * 1440;
+    for (const [s, e] of [[base + 22*60, base + 24*60], [base, base + 6*60]]) {
+      const os = Math.max(s, startMin), oe = Math.min(e, endMin);
+      if (oe > os) res.push([os, oe]);
+    }
+  }
+  res.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const iv of res) {
+    const last = merged[merged.length - 1];
+    if (last && iv[0] <= last[1]) last[1] = Math.max(last[1], iv[1]);
+    else merged.push([iv[0], iv[1]]);
+  }
+  return merged;
+}
+
+function splitRecord(r) {
+  const startMin = toMin(r.start);
+  let endMin = toMin(r.end);
+  if (endMin <= startMin) endMin += 1440;
+  const workMins = Math.round(r.hours * 60);
+
+  // (종료-시작) - 근무시간 = 실제 차감된 휴게시간
+  const deducted = (endMin - startMin) - workMins;
+
+  // 평일(월~금, 비공휴일)이면 ERP가 12:00~13:00를 자동 점심으로 처리하므로
+  // 점심 구간이 부분 차감(60분 미만)되는 경우 분리하지 않음 — ERP에 맡김
+  const isWeekday = r.date && (() => {
+    const dt = new Date(r.date + 'T00:00:00');
+    const dow = dt.getDay();
+    const ch = getCustomHolidays();
+    return dow !== 0 && dow !== 6 && !HOLIDAYS[r.date] && !ch[r.date];
+  })();
+
+  let breaks = getBreaksAbs(startMin);
+
+  // 평일 + 점심 부분 차감(60분 미만): ERP가 12:00~13:00을 통으로 제외하므로
+  // 1구간: start~12:00 / 2구간: 13:00~(원래종료 + 부족분) 으로 종료시간 보정
+  if (isWeekday && deducted > 0 && deducted < 60) {
+    const lunchStart = 12 * 60; // 720
+    const lunchEnd   = 13 * 60; // 780
+    // 점심 구간이 실제로 이 레코드와 겹치는 경우에만 적용
+    if (startMin < lunchEnd && endMin > lunchStart) {
+      const shortfall = 60 - deducted; // ERP가 추가로 빼는 분 (=보정치)
+      const seg1End   = lunchStart;
+      const seg2Start = lunchEnd;
+      const seg2End   = endMin + shortfall;
+      const seg1Hours = Math.round((seg1End - startMin) / 60 * 10) / 10;
+      const seg2Hours = Math.round((seg2End - seg2Start) / 60 * 10) / 10;
+      return [
+        { ...r, start: r.start,         end: toHHMM(seg1End),   hours: seg1Hours,
+          holiday_early: r.holiday_early, night_work: r.night_work,
+          _split: true, _splitIdx: 0, _splitTotal: 2 },
+        { ...r, start: toHHMM(seg2Start), end: toHHMM(seg2End), hours: seg2Hours,
+          holiday_early: false, night_work: false,
+          _split: true, _splitIdx: 1, _splitTotal: 2 },
+      ];
+    }
+    // 점심 구간 미포함이면 기존 방식
+    breaks = breaks.filter(b => b.s % 1440 !== 12*60);
+  }
+  if (deducted <= 0) return [r];
+
+  // ── 휴일·주말 + 점심(12:00~13:00)이 근무에 걸치는 경우 ──────────────
+  //   ERP가 휴일엔 점심을 자동 차감하지 않으므로 점심을 제외하도록 직접 분리.
+  //   ERP는 야간(22:00~06:00)·휴일조기 배수를 '시각'으로 계산하므로, 분리를
+  //   원래 시작~종료 '안'에서만 하면(바깥 시각 불변) 어떤 배수도 건드리지 않는다.
+  //   · 오전: 시작~정오 근무를 0.5시간 단위로 반올림 (정수/·5)
+  //   · 오후: (원본 근무시간 - 오전)을 '실제 종료시각에서 역산'해 배치
+  //   → 시작·종료 시각은 그대로, 점심은 그 사이 공백(=실제 차감된 휴게)으로 표현
+  //     시각과 시간수가 일치하고, 합계는 원본 근무시간과 동일 (예: 9h → 3h + 6h)
+  const LUNCH_S = 12 * 60, LUNCH_E = 13 * 60;
+  if (!isWeekday && startMin < LUNCH_S && endMin > LUNCH_E) {
+    const morningH   = round05((LUNCH_S - startMin) / 60);      // 정오 전 근무, 0.5 단위
+    const afternoonH = round05(r.hours - morningH);             // 나머지 (합계 = 원본)
+    const seg1End    = startMin + Math.round(morningH * 60);
+    const seg2Start  = endMin   - Math.round(afternoonH * 60);  // 실제 종료에서 역산 → 범위 내
+    if (morningH >= 0.5 && afternoonH >= 0.5 && seg1End <= seg2Start) {
+      return [
+        { ...r, start: r.start, end: toHHMM(seg1End), hours: morningH,
+          holiday_early: r.holiday_early, night_work: r.night_work,
+          _origHol: r.holiday_early, _origNight: r.night_work,
+          _split: true, _splitIdx: 0, _splitTotal: 2 },
+        { ...r, start: toHHMM(seg2Start), end: r.end, hours: afternoonH,
+          holiday_early: false, night_work: false,
+          _origHol: false, _origNight: false,
+          _split: true, _splitIdx: 1, _splitTotal: 2 },
+      ];
+    }
+  }
+
+  // 차감된 시간만큼만 휴게를 앞에서부터 순서대로 적용
+  let remaining = deducted;
+  const appliedBreaks = [];
+  for (const b of breaks) {
+    if (remaining <= 0) break;
+    if (b.e <= startMin || b.s >= endMin) continue;
+    const oS = Math.max(b.s, startMin), oE = Math.min(b.e, endMin);
+    const dur = Math.min(oE - oS, remaining);
+    appliedBreaks.push({s: oS, e: oS + dur});
+    remaining -= dur;
+  }
+
+  // 표준 휴게창(점심/저녁)으로 다 못 뺀 잔여 휴게가 있고 근무가 야간에 걸치면,
+  // 야간(22:00~06:00)은 절대 건드리지 않도록 '비야간' 시간에서만 추가 차감한다.
+  // (야간 경계에 붙여서 빼므로 바깥 시작·종료 시각은 그대로 보존됨)
+  if (remaining > 0) {
+    const nights = nightIntervals(startMin, endMin);
+    if (nights.length) {
+      const occ = [...appliedBreaks.map(b => [b.s, b.e]), ...nights].sort((a, b) => a[0] - b[0]);
+      const freeNN = [];
+      let c = startMin;
+      for (const [s, e] of occ) {
+        if (s > c) freeNN.push([c, Math.min(s, endMin)]);
+        c = Math.max(c, e);
+        if (c >= endMin) break;
+      }
+      if (c < endMin) freeNN.push([c, endMin]);
+      const nightEnds = new Set(nights.map(n => n[1]));
+      for (const [a, b] of freeNN) {
+        if (remaining <= 0) break;
+        const take = Math.min(b - a, remaining);
+        if (take <= 0) continue;
+        // 야간 시작 직전 / 야간 끝 직후에서 우선 차감 → 바깥 경계 보존
+        const [bs, be] = nightEnds.has(a) ? [a, a + take] : [b - take, b];
+        appliedBreaks.push({ s: bs, e: be });
+        remaining -= take;
+      }
+      appliedBreaks.sort((x, y) => x.s - y.s);
+    }
+  }
+
+  if (!appliedBreaks.length) return [r];
+
+  // 적용된 휴게 구간으로 세그먼트 분리
+  const segments = [];
+  let cur = startMin;
+  for (const b of appliedBreaks) {
+    if (b.s > cur) segments.push({s: cur, e: b.s});
+    cur = b.e;
+  }
+  if (cur < endMin) segments.push({s: cur, e: endMin});
+  if (!segments.length) return [r];
+
+  const lastIdx = segments.length - 1;
+  return segments.map((seg, idx) => {
+    const hol   = idx === 0 ? r.holiday_early : false;
+    const night = idx === 0 ? r.night_work    : false;
+    return {
+      ...r,
+      // 바깥 경계(첫 조각 시작 / 마지막 조각 종료)는 원래 시각 문자열을 그대로 유지.
+      // toHHMM은 24:00을 00:00으로 바꿔 야간(22:00~24:00) 계산이 틀어지므로 방지.
+      start: idx === 0       ? r.start : toHHMM(seg.s),
+      end:   idx === lastIdx ? r.end   : toHHMM(seg.e),
+      hours: Math.round((seg.e - seg.s) / 60 * 10) / 10,
+      holiday_early: hol,
+      night_work:    night,
+      _origHol:   hol,    // holiday_early와 항상 일치 유지
+      _origNight: night,
+      _split: true,
+      _splitIdx: idx,
+      _splitTotal: segments.length,
+    };
+  });
+}
+
+function splitAllRecords(records) {
+  const result = [];
+  for (const r of records) {
+    const split = splitRecord(r);
+    result.push(...split);
+  }
+  return result;
+}
+
+function closeErrModal() { document.getElementById('errModal').style.display = 'none'; }
+
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function toggleErrDetail(el) {
+  const d = el.querySelector('.err-detail');
+  if (d) d.style.display = (d.style.display === 'none') ? 'block' : 'none';
+}
+
+function updateFixHint(box) {
+  if (!box) return;
+  const nm = box.querySelector('.fix-name'), em = box.querySelector('.fix-emp'), hint = box.querySelector('.fix-hint');
+  if (!hint) return;
+  const name = (nm ? nm.value : '').trim();
+  if (!name) { hint.innerHTML = ''; return; }
+  const matches = masterByName[name] || [];
+  if (!matches.length) { hint.innerHTML = `<span style="color:var(--t4)">명부에 '${escHtml(name)}' 없음</span>`; return; }
+  const chips = matches.map(m => {
+    const clicked = m.empno === (em ? em.dataset.picked : '');
+    return `<span onclick="pickEmp(this,'${escHtml(m.empno)}')" title="클릭하면 사번칸에 입력" style="cursor:pointer;display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:10px;font-size:11px;border:1px solid ${clicked ? 'var(--blue)' : 'var(--line)'};background:${clicked ? 'var(--blue-bg)' : 'transparent'};color:${clicked ? 'var(--blue)' : 'var(--t2)'}">${escHtml(m.empno)}${m.dept ? ' · ' + escHtml(m.dept) : ''}${clicked ? ' ✓' : ''}</span>`;
+  }).join('');
+  hint.innerHTML = `<div style="display:flex;align-items:flex-start;gap:4px"><span style="color:var(--t3);white-space:nowrap;flex-shrink:0;padding-top:3px">명부:</span><div><div>${chips}</div><div style="font-size:11px;color:var(--t3);margin-top:2px">↳ 수정할 내용이 맞다면 클릭</div></div></div>`;
+}
+function pickEmp(chip, emp) {
+  const box = chip.closest('.err-fix');
+  const em = box && box.querySelector('.fix-emp');
+  if (em) { em.value = emp; em.dataset.picked = emp; box.dataset.touched = '1'; updateFixHint(box); }
+}
+
+function buildCorrections() {
+  const out = [], seen = new Set();
+  document.querySelectorAll('#errList .err-fix').forEach(box => {
+    // 펼쳐진 항목 중 사용자가 직접 칩 클릭 또는 입력칸을 수정한 항목만 처리
+    const detail = box.closest('.err-detail');
+    if (detail && detail.style.display === 'none') return;
+    if (!box.dataset.touched) return;
+    const nmEl = box.querySelector('.fix-name'), emEl = box.querySelector('.fix-emp');
+    const origName = nmEl ? (nmEl.dataset.orig || '').trim() : '';
+    const newName  = nmEl ? (nmEl.value || '').trim() : '';
+    const origEmp  = emEl ? (emEl.dataset.orig || '').trim() : '';
+    const newEmp   = emEl ? (emEl.value || '').trim() : '';
+    const nameChg = !!(origName && newName && origName !== newName);
+    const empChg  = !!(origEmp && newEmp && origEmp !== newEmp);
+    if (!nameChg && !empChg) return;
+    const page = (box.dataset.page || '').trim();
+    const date = (box.dataset.date || '').trim();
+    const row = { origName, newName: nameChg ? newName : origName, origEmp, newEmp: empChg ? newEmp : origEmp, page, date, nameChg, empChg };
+    const k = JSON.stringify(row);
+    if (!seen.has(k)) { seen.add(k); out.push(row); }
+  });
+  return out;
+}
+
+function copyCorrections(ev) {
+  if (ev) ev.stopPropagation();
+  const ta = document.getElementById('corrOut');
+  const corr = buildCorrections();
+  ta.style.display = 'block';
+  if (!corr.length) {
+    ta.value = '※ 변경된 항목이 없습니다. 각 항목을 펼쳐 올바른 이름 또는 사번을 입력(수정)한 뒤 다시 눌러주세요.';
+    return;
+  }
+  const pairs = [];
+  corr.forEach(rf => {
+    if (rf.nameChg) pairs.push({ from: rf.origName, to: rf.newName });
+    if (rf.empChg)  pairs.push({ from: rf.origEmp,  to: rf.newEmp });
+  });
+  const json = JSON.stringify(pairs);
+  ta.value = json;
+  ta.focus(); ta.select();
+  navigator.clipboard.writeText(json).catch(() => {});
+}
+
+function downloadErrList(ev) {
+  if (ev) ev.stopPropagation();
+  if (!ERR_ROWS.length) { alert('내려받을 오류내역이 없습니다.'); return; }
+
+  const headers = ['순번', '유형', '상태', '이름', '사번', '날짜', '시간', '권장이름', '권장사번', '근무내용', '위치'];
+  const rows = ERR_ROWS.map((r, i) => [
+    i + 1, r.type, r.status, r.name, r.empno, r.date, r.time,
+    r.sugName, r.sugEmp, r.content, r.loc,
+  ]);
+  const wsData = [headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // 열 너비
+  ws['!cols'] = [
+    {wch:5},   // 순번
+    {wch:26},  // 유형
+    {wch:10},  // 상태
+    {wch:9},   // 이름
+    {wch:9},   // 사번
+    {wch:12},  // 날짜
+    {wch:14},  // 시간
+    {wch:9},   // 권장이름
+    {wch:9},   // 권장사번
+    {wch:32},  // 근무내용
+    {wch:42},  // 위치
+  ];
+  // 헤더 고정
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  // 행 높이
+  ws['!rows'] = [{ hpt:22 }];
+  for (let i = 0; i < rows.length; i++) ws['!rows'].push({ hpt:18 });
+
+  // 스타일 상수
+  const font_base = { name:'맑은 고딕', sz:10, color:{ rgb:'191F28' } };
+  const font_hdr  = { name:'맑은 고딕', sz:10, bold:true, color:{ rgb:'FFFFFF' } };
+  const font_red  = { name:'맑은 고딕', sz:10, bold:true, color:{ rgb:'F04452' } };
+  const font_grn  = { name:'맑은 고딕', sz:10, bold:true, color:{ rgb:'00A566' } };
+  const font_gray = { name:'맑은 고딕', sz:10, color:{ rgb:'8B95A1' } };
+  const fill_hdr  = { fgColor:{ rgb:'F04452' }, patternType:'solid' };
+  const fill_even = { fgColor:{ rgb:'FEF0F1' }, patternType:'solid' };
+  const fill_need = { fgColor:{ rgb:'FEE2E4' }, patternType:'solid' };
+  const fill_ok   = { fgColor:{ rgb:'E8FAF2' }, patternType:'solid' };
+  const border = {
+    top:    { style:'thin', color:{ rgb:'E2E5EA' } },
+    bottom: { style:'thin', color:{ rgb:'E2E5EA' } },
+    left:   { style:'thin', color:{ rgb:'E2E5EA' } },
+    right:  { style:'thin', color:{ rgb:'E2E5EA' } },
+  };
+  const border_hdr = {
+    top:    { style:'thin', color:{ rgb:'D02B39' } },
+    bottom: { style:'thin', color:{ rgb:'D02B39' } },
+    left:   { style:'thin', color:{ rgb:'D02B39' } },
+    right:  { style:'thin', color:{ rgb:'D02B39' } },
+  };
+  const align_c = { horizontal:'center', vertical:'center' };
+  const align_l = { horizontal:'left',   vertical:'center', wrapText:true };
+
+  const centerCols = new Set([0, 2, 3, 4, 5, 6, 7, 8]); // 순번·상태·이름·사번·날짜·시간·권장이름·권장사번
+  const colCount = headers.length;
+  for (let ri = 0; ri < wsData.length; ri++) {
+    for (let ci = 0; ci < colCount; ci++) {
+      const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
+      if (!ws[addr]) ws[addr] = { v: '', t:'s' };
+      const isHdr = ri === 0;
+      const row   = isHdr ? null : rows[ri - 1];
+      const isNeed = row && row[2] === '수정 필요';
+
+      // fill
+      let fill;
+      if (isHdr)        fill = fill_hdr;
+      else if (isNeed)  fill = (ri % 2 === 0) ? fill_need : fill_even;
+      else if (ri % 2 === 0) fill = { fgColor:{ rgb:'F7F8FA' }, patternType:'solid' };
+
+      // font
+      let font = font_base;
+      if (isHdr)                     font = font_hdr;
+      else if (ci === 1)             font = isNeed ? { ...font_base, bold:true } : font_base; // 유형
+      else if (ci === 2)             font = isNeed ? font_red : font_grn;                     // 상태
+      else if (ci === 10)            font = font_gray;                                        // 위치
+
+      ws[addr].s = {
+        font,
+        fill,
+        border: isHdr ? border_hdr : border,
+        alignment: centerCols.has(ci) ? align_c : align_l,
+      };
+    }
+  }
+
+  // 자동필터
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:rows.length, c:colCount-1} }) };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '오류내역');
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  XLSX.writeFile(wb, `시간외근무_오류내역_${stamp}.xlsx`, { bookType:'xlsx', type:'binary', cellStyles:true });
+}
+
+function strU16le(s) {
+  const a = [];
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a.push(c & 0xFF, c >> 8); }
+  return a;
+}
+function getParaRecords(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const recs = [];
+  let i = 0, tblCount = 0, page = 0;
+  while (i + 4 <= buf.length) {
+    const hdr = dv.getUint32(i, true);
+    const tagId = hdr & 0x3FF;
+    let size = (hdr >>> 20) & 0xFFF;
+    i += 4;
+    if (size === 0xFFF) { if (i + 4 > buf.length) break; size = dv.getUint32(i, true); i += 4; }
+    const end = i + size;
+    if (end > buf.length) break;
+    if (tagId === 71 && size >= 4 && dv.getUint32(i, true) === 0x74626c20) {
+      tblCount++;
+      if (tblCount % 2 === 1) page++;
+    }
+    if (tagId === 67) {
+      let s = '';
+      for (let j = i; j + 1 < end; j += 2) {
+        const cp = dv.getUint16(j, true);
+        if (cp === 0) break;
+        if (cp >= 0x20) s += String.fromCharCode(cp);
+      }
+      const t = s.trim();
+      if (t) recs.push({ start: i, end, text: t, page: page || 1 });
+    }
+    i = end;
+  }
+  return recs;
+}
+// 모든 PARA_TEXT 레코드 반환 (name/empno/date/hours 위치 파악용)
+function getParaRecordsAll(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const recs = [];
+  let i = 0;
+  while (i + 4 <= buf.length) {
+    const headerOff = i;
+    const hdr = dv.getUint32(i, true);
+    const tagId = hdr & 0x3FF;
+    let size = (hdr >>> 20) & 0xFFF;
+    i += 4;
+    let extSizeOff = -1;
+    if (size === 0xFFF) { if (i + 4 > buf.length) break; extSizeOff = i; size = dv.getUint32(i, true); i += 4; }
+    const dataStart = i, end = i + size;
+    if (end > buf.length) break;
+    if (tagId === 67) {
+      let s = '';
+      for (let j = i; j + 1 < end; j += 2) {
+        const cp = dv.getUint16(j, true);
+        if (cp === 0) break;
+        if (cp >= 0x20) s += String.fromCharCode(cp);
+      }
+      recs.push({ headerOff, extSizeOff, dataStart, start: dataStart, end, text: s.trim() });
+    }
+    i = end;
+  }
+  return recs;
+}
+// 테이블 셀 V 추가/제거: hours 레코드 직후부터 LIST_HEADER 카운팅으로 셀 탐색
+// cellIdx: 0=평일야간, 1=휴일조기  (hours 다음 셀 순서, 열 순서: hours|야간|조기|내용)
+// wantV: true=V 삽입, false=V 제거
+function modifyVCell(buf, afterHoursEnd, cellIdx, wantV) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let listCount = 0;
+  let paraHdrEnd = -1;
+  let ptHdrAt = -1;
+  let ptDataStart = -1;
+  let ptSize = 0;
+  let cellLevel = 4;
+  let i = afterHoursEnd;
+  const LIMIT = afterHoursEnd + 3000;
+  const scanLog = [];
+
+  while (i + 4 <= Math.min(buf.length, LIMIT)) {
+    const hdrVal = dv.getUint32(i, true);
+    const tagId  = hdrVal & 0x3FF;
+    let sz = (hdrVal >>> 20) & 0xFFF;
+    const hdrAt = i;
+    i += 4;
+    if (sz === 0xFFF) { if (i + 4 > buf.length) break; sz = dv.getUint32(i, true); i += 4; }
+    const end = i + sz;
+    scanLog.push('tag='+tagId+' sz='+sz+' lc='+listCount+' @'+hdrAt);
+
+    if (tagId === 72) {
+      listCount++;
+      if (listCount > cellIdx + 2) break;
+    } else if (tagId === 66 && listCount === cellIdx + 1) {
+      cellLevel = (hdrVal >>> 10) & 0x3FF;
+      paraHdrEnd = end;
+    } else if (tagId === 68 && listCount === cellIdx + 1 && paraHdrEnd >= 0 && ptDataStart < 0) {
+      cellLevel = (hdrVal >>> 10) & 0x3FF;
+    } else if (tagId === 67 && listCount === cellIdx + 1 && paraHdrEnd >= 0) {
+      ptHdrAt = hdrAt;
+      ptDataStart = i;
+      ptSize = sz;
+      break;
+    }
+    i = end;
+  }
+
+  if (wantV) {
+    if (ptDataStart >= 0) {
+      // PARA_TEXT 존재 — 첫 문자가 V가 아니면 V 삽입
+      if (ptSize >= 2 && dv.getUint16(ptDataStart, true) === 0x0056) return buf; // 이미 V
+      const ins = ptDataStart;
+      const newBuf = new Uint8Array(buf.length + 2);
+      newBuf.set(buf.subarray(0, ins));
+      newBuf[ins] = 0x56; newBuf[ins + 1] = 0x00;
+      newBuf.set(buf.subarray(ins), ins + 2);
+      const ndv = new DataView(newBuf.buffer, newBuf.byteOffset, newBuf.byteLength);
+      const oh = ndv.getUint32(ptHdrAt, true);
+      const os = (oh >>> 20) & 0xFFF;
+      if (os + 2 < 0xFFF) ndv.setUint32(ptHdrAt, (oh & 0x000FFFFF) | ((os + 2) << 20), true);
+      return newBuf;
+    } else if (paraHdrEnd >= 0) {
+      // PARA_TEXT 없음 — 새 레코드 삽입
+      // size=4: V(2바이트) + para_end(2바이트)
+      const newHdr = (4 << 20) | (cellLevel << 10) | 67;
+      const rec = new Uint8Array(8);
+      const rdv = new DataView(rec.buffer);
+      rdv.setUint32(0, newHdr, true);
+      rec[4] = 0x56; rec[5] = 0x00; rec[6] = 0x0D; rec[7] = 0x00;
+      const newBuf = new Uint8Array(buf.length + 8);
+      newBuf.set(buf.subarray(0, paraHdrEnd));
+      newBuf.set(rec, paraHdrEnd);
+      newBuf.set(buf.subarray(paraHdrEnd), paraHdrEnd + 8);
+      // PARA_HEADER nChar 업데이트: 1(para_end만) → 2(V+para_end)
+      // bytes[0-1] at paraHdrEnd-24, bytes[20-21] at paraHdrEnd-4
+      if (paraHdrEnd >= 24) {
+        newBuf[paraHdrEnd - 24] = 2;          // nChar low = 2
+        newBuf[paraHdrEnd - 23] = 0;          // nChar high = 0
+        newBuf[paraHdrEnd - 4]  = 0x00;       // bytes[20-21] → 0x8000 (텍스트 셀과 동일)
+        newBuf[paraHdrEnd - 3]  = 0x80;
+      }
+      return newBuf;
+    }
+    return buf; // 삽입 위치 미발견
+  } else {
+    // V 제거
+    if (ptDataStart < 0 || ptSize < 2) return buf;
+    if (dv.getUint16(ptDataStart, true) !== 0x0056) return buf; // V 없음
+    if (ptSize === 4 && dv.getUint16(ptDataStart + 2, true) === 0x000D) {
+      // 실제 체크된 셀의 PARA_TEXT는 "V"+문단끝(0D) 4바이트 구조(=ADD 로직이 만드는 것과 동일).
+      // 빈 셀은 이 레코드 자체가 없고 PARA_HEADER의 nChar=1이므로(nChar=2는 체크됨 상태),
+      // 2바이트만 지우면 nChar(헤더에 캐시된 문자수)와 실제 레코드 크기가 어긋나 문서가 손상된다.
+      // 레코드 전체(헤더4+데이터4)를 삭제하고 nChar를 2→1로 되돌려 "빈 셀" 구조로 정확히 복원한다.
+      const headerLen = ptDataStart - ptHdrAt; // 통상 4
+      const newBuf = new Uint8Array(buf.length - headerLen - ptSize);
+      newBuf.set(buf.subarray(0, ptHdrAt));
+      newBuf.set(buf.subarray(ptDataStart + ptSize), ptHdrAt);
+      if (paraHdrEnd >= 24) {
+        newBuf[paraHdrEnd - 24] = 1;          // nChar low = 1
+        newBuf[paraHdrEnd - 23] = 0;          // nChar high = 0
+        newBuf[paraHdrEnd - 4]  = 0x00;       // bytes[20-21] → 0x8000 (빈 셀과 동일)
+        newBuf[paraHdrEnd - 3]  = 0x80;
+      }
+      return newBuf;
+    }
+    // 그 외(V 뒤에 다른 문자가 있는 등 일반 케이스): V 2바이트만 제거
+    const newBuf = new Uint8Array(buf.length - 2);
+    newBuf.set(buf.subarray(0, ptDataStart));
+    newBuf.set(buf.subarray(ptDataStart + 2), ptDataStart);
+    const ndv = new DataView(newBuf.buffer, newBuf.byteOffset, newBuf.byteLength);
+    const oh = ndv.getUint32(ptHdrAt, true);
+    const os = (oh >>> 20) & 0xFFF;
+    ndv.setUint32(ptHdrAt, (oh & 0x000FFFFF) | ((os - 2) << 20), true);
+    return newBuf;
+  }
+}
+// hours PARA_TEXT 레코드 끝 위치 반환 (V 셀 탐색 기준점)
+function findHoursEnd(buf, origName, origEmp, date) {
+  const DT_RE = /^\d{4}-\d{2}-\d{2}$/, HRS_RE = /^\d+(\.\d+)?$/;
+  const recs = getParaRecordsAll(buf);
+  for (let m = 0; m + 5 < recs.length; m++) {
+    if (recs[m].text !== origName || recs[m + 1].text !== origEmp) continue;
+    if (!DT_RE.test(recs[m + 2].text) || recs[m + 2].text !== date) continue;
+    if (HRS_RE.test(recs[m + 5].text)) {
+      const rec = recs[m + 5];
+      return rec.end;
+    }
+  }
+  return -1;
+}
+function applyVFix(buf, vfList) {
+  for (const vf of vfList) {
+    let hoursEnd = findHoursEnd(buf, vf.origName, vf.origEmp, vf.date);
+    if (hoursEnd < 0) continue;
+    if (vf.wantNight !== vf.origNight) {
+      buf = modifyVCell(buf, hoursEnd, 0, vf.wantNight);
+      // 버퍼 변경 후 hoursEnd 재탐색
+      hoursEnd = findHoursEnd(buf, vf.origName, vf.origEmp, vf.date);
+      if (hoursEnd < 0) continue;
+    }
+    if (vf.wantHol !== vf.origHol) {
+      buf = modifyVCell(buf, hoursEnd, 1, vf.wantHol);
+    }
+  }
+  return buf;
+}
+// hours 셀 뒤 실제 테이블 셀 구조: cellIdx 0=평일야간출근 1=휴일조기출근 2=근무유형 3=근무내용
+// (근무유형 열이 체크 두 칸과 근무내용 사이에 있고, 체크가 비어있으면 PARA_TEXT 레코드 자체가 생략되므로
+//  이름/사번처럼 배열 인덱스(m+6, m+7, m+8)로 고정 접근하면 실제로는 엉뚱한 셀(다음 행 순번 등)을 가리키게 된다.
+//  modifyVCell과 동일한 LIST_HEADER 기반 구조 탐색으로 셀을 찾아야 체크 여부와 무관하게 항상 정확한 셀을 가리킨다.)
+// 셀 하나가 여러 줄로 줄바꿈되면 PARA_HEADER+PARA_TEXT 쌍이 같은 LIST_HEADER(listCount) 안에 여러 개 이어진다.
+// 첫 번째 레코드만 찾고 멈추면 두 번째 줄부터는 못 찾으므로, 같은 셀에 속한 레코드를 전부 모아서 반환한다.
+function findCellRecords(buf, afterHoursEnd, cellIdx) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let listCount = 0, paraHdrEnd = -1, textLevel = -1;
+  let i = afterHoursEnd;
+  const LIMIT = afterHoursEnd + 4000;
+  const found = [];
+  while (i + 4 <= Math.min(buf.length, LIMIT)) {
+    const hdrVal = dv.getUint32(i, true);
+    const tagId = hdrVal & 0x3FF;
+    const level = (hdrVal >>> 10) & 0x3FF;
+    let sz = (hdrVal >>> 20) & 0xFFF;
+    i += 4;
+    if (sz === 0xFFF) { if (i + 4 > buf.length) break; sz = dv.getUint32(i, true); i += 4; }
+    const end = i + sz;
+    if (tagId === 72) {
+      listCount++;
+      if (listCount > cellIdx + 1) break; // 다음 셀로 넘어감
+    } else if (tagId === 66 && listCount === cellIdx + 1) {
+      paraHdrEnd = end;
+      // 셀의 PARA_TEXT는 자신을 감싸는 PARA_HEADER보다 level이 1 높다.
+      // 페이지 넘김 등으로 뒤에 다른 레벨(예: 컨트롤/필드 문자)의 tag=67이 섞여 들어오는 걸 걸러내기 위한 기준값.
+      if (textLevel < 0) textLevel = level + 1;
+    } else if (tagId === 67 && listCount === cellIdx + 1 && paraHdrEnd >= 0 && level === textLevel) {
+      let s = '';
+      for (let j = i; j + 1 < end; j += 2) {
+        const cp = dv.getUint16(j, true);
+        if (cp === 0) break;
+        if (cp >= 0x20) s += String.fromCharCode(cp);
+      }
+      found.push({ start: i, end, text: s.trim() });
+    }
+    i = end;
+  }
+  return found;
+}
+// 근무내용 열의 cellIdx는 회사/양식마다 중간 열 개수(근무유형 유무 등)가 달라 고정할 수 없다.
+// 파일 하나당 한 번만, 실제 데이터가 있는 행을 찾아 "체크(V)도, 한두 글자 코드도 아닌 실질적인 텍스트"가
+// 처음 나오는 cellIdx를 근무내용 열로 추정(calibrate)한다. 구조 탐색(findCellRecords)만 쓰므로
+// 페이지 넘김 시 반복되는 표 헤더 텍스트에도 영향받지 않는다.
+function calibrateContentCellIdx(buf) {
+  const DT_RE = /^\d{4}-\d{2}-\d{2}$/, HRS_RE = /^\d+(\.\d+)?$/;
+  const allRecs = getParaRecordsAll(buf);
+  for (let m = 0; m + 5 < allRecs.length; m++) {
+    if (!DT_RE.test(allRecs[m+2].text) || !HRS_RE.test(allRecs[m+5].text)) continue;
+    if (!allRecs[m].text || !allRecs[m+1].text) continue;
+    const hoursEnd = allRecs[m+5].end;
+    for (let cellIdx = 2; cellIdx <= 6; cellIdx++) {
+      const joined = findCellRecords(buf, hoursEnd, cellIdx).map(r => r.text).join('');
+      if (joined.length >= 3 && joined !== 'V') return cellIdx;
+    }
+  }
+  return 3; // 판단 불가 시 기존 관례값(체크 2칸 + 근무유형 1칸 뒤)으로 폴백
+}
+// 삭제된 행의 셀을 같은 바이트 수 공백으로 덮어씌워 빈 행처럼 처리
+function applyRowBlank(buf, rb, contentCellIdx) {
+  const HRS_RE = /^\d+(\.\d+)?$/;
+  const allRecs = getParaRecordsAll(buf);
+  for (let m = 0; m + 5 < allRecs.length; m++) {
+    if (allRecs[m].text !== rb.origName || allRecs[m + 1].text !== rb.origEmp) continue;
+    if (allRecs[m + 2].text !== rb.date) continue;
+    if (!HRS_RE.test(allRecs[m + 5].text)) continue; // hours 검증으로 열 구조 확인
+    // 이름·사번·날짜·시작·종료·시간수 → 같은 바이트 수 공백
+    for (const idx of [m, m+1, m+2, m+3, m+4, m+5]) {
+      const t = allRecs[idx].text;
+      if (t) patchRecord(buf, allRecs[idx], strU16le(t), strU16le(' '.repeat(t.length)));
+    }
+    // 평일야간/휴일조기부터 근무내용까지(근무유형 등 중간 열 포함) → 공백 (줄바꿈된 셀은 모든 줄을 지움)
+    const hoursEnd = allRecs[m + 5].end;
+    for (let cellIdx = 0; cellIdx <= contentCellIdx; cellIdx++) {
+      const recs = findCellRecords(buf, hoursEnd, cellIdx);
+      for (const rec of recs) {
+        if (rec.text) patchRecord(buf, rec, strU16le(rec.text), strU16le(' '.repeat(rec.text.length)));
+      }
+    }
+    // 순번(m-1) → 공백
+    if (m > 0 && /^\d{1,3}$/.test(allRecs[m - 1].text)) {
+      const st = allRecs[m - 1].text;
+      patchRecord(buf, allRecs[m - 1], strU16le(st), strU16le(' '.repeat(st.length)));
+    }
+    break;
+  }
+}
+// V 변경 항목 수집 — hwpLabel 지정 시 해당 파일만 반환
+function buildVCorrections(hwpLabel) {
+  return RECORDS.filter(r =>
+    (!hwpLabel || r.file === hwpLabel) &&
+    (r.holiday_early !== r._origHol || r.night_work !== r._origNight))
+    .map(r => ({ origName: r.name, origEmp: r.empno, date: r.date,
+                 wantNight: r.night_work, wantHol: r.holiday_early,
+                 origNight: r._origNight, origHol: r._origHol }));
+}
+function patchRecord(buf, rec, from, to) {
+  let cnt = 0;
+  for (let p = rec.start; p + from.length <= rec.end; p++) {
+    let m = true;
+    for (let j = 0; j < from.length; j++) { if (buf[p + j] !== from[j]) { m = false; break; } }
+    if (m) { for (let j = 0; j < to.length; j++) buf[p + j] = to[j]; cnt++; p += from.length - 1; }
+  }
+  return cnt;
+}
+function applyRowFix(buf, rf) {
+  const recs = getParaRecords(buf);
+  const nFrom = strU16le(rf.origName), nTo = strU16le(rf.newName);
+  const eFrom = strU16le(rf.origEmp),  eTo = strU16le(rf.newEmp);
+  const doName = rf.nameChg && nFrom.length === nTo.length && nFrom.length > 0;
+  const doEmp  = rf.empChg  && eFrom.length === eTo.length && eFrom.length > 0;
+  let nameDone = 0, empDone = 0;
+  for (let k = 0; k + 1 < recs.length; k++) {
+    if (recs[k].text !== rf.origName || recs[k + 1].text !== rf.origEmp) continue;
+    if (doName) nameDone += patchRecord(buf, recs[k], nFrom, nTo);
+    if (doEmp)  empDone  += patchRecord(buf, recs[k + 1], eFrom, eTo);
+  }
+  return { nameDone, empDone };
+}
+function downloadBytes(arr, filename) {
+  const blob = new Blob([new Uint8Array(arr)], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+}
+async function makeFixedHwp(ev) {
+  if (ev) ev.stopPropagation();
+
+  // 검토하지 않은 항목(data-touched 없음) 확인
+  const allFixes = document.querySelectorAll('#errList .err-fix');
+  const untouched = [...allFixes].filter(b => !b.dataset.touched);
+  if (untouched.length > 0) {
+    alert(`아직 검토하지 않은 항목이 ${untouched.length}개 있습니다.\n모든 항목을 펼쳐 올바른 이름/사번을 확인·클릭한 뒤 다운로드해주세요.`);
+    return;
+  }
+
+  const rows = buildCorrections();
+  const hasVChanges = RECORDS.some(r => r.holiday_early !== r._origHol || r.night_work !== r._origNight);
+  const hasDeleted = deletedRecords.length > 0;
+  if (!rows.length && !hasVChanges && !hasDeleted) {
+    alert('변경할 내용이 없습니다.\n이름/사번 수정, V 체크 변경, 행 삭제 중 하나를 먼저 진행해주세요.');
+    return;
+  }
+  const skipped = [];
+  for (const rf of rows) {
+    if (rf.nameChg && rf.origName.length !== rf.newName.length) { skipped.push(rf.origName + '→' + rf.newName + ' (이름 글자수 다름)'); rf.nameChg = false; }
+    if (rf.empChg  && rf.origEmp.length  !== rf.newEmp.length)  { skipped.push(rf.origEmp + '→' + rf.newEmp + ' (사번 자리수 다름)'); rf.empChg = false; }
+  }
+  const active = rows.filter(rf => rf.nameChg || rf.empChg);
+  if (!active.length && !hasVChanges && !hasDeleted) {
+    alert('자동 수정 불가: 글자수가 다른 항목뿐입니다.\n(' + skipped.join(', ') + ')\n글자수가 다른 교체는 한글에서 직접 수정해주세요.');
+    return;
+  }
+  if (typeof CFB === 'undefined') { alert('수정 라이브러리(CFB) 로딩 중입니다. 잠시 후 다시 시도해주세요.'); return; }
+  if (!hwpFiles.length) { alert('업로드된 hwp 파일이 없습니다.'); return; }
+
+  let madeFiles = [], failed = [];
+  const outputFiles = [];
+
+  for (const hf of hwpFiles) {
+    try {
+      const ab = await hf.file.arrayBuffer();
+      const cfb = CFB.read(new Uint8Array(ab), { type: 'buffer' });
+      const sec = CFB.find(cfb, '/BodyText/Section0') || CFB.find(cfb, 'BodyText/Section0');
+      if (!sec) { failed.push(hf.file.name + ' (구조 인식 실패: DRM 보호 파일일 수 있음)'); continue; }
+      let dec = pako.inflateRaw(new Uint8Array(sec.content));
+      let total = 0;
+      const detailLines = [];
+      // 이름/사번 수정
+      for (const rf of active) {
+        const r = applyRowFix(dec, rf);
+        if (r.nameDone + r.empDone > 0) {
+          total += r.nameDone + r.empDone;
+          detailLines.push('  • ' + rf.newName + ' (' + rf.newEmp + ') ' + rf.date + ' [이름/사번]');
+        }
+      }
+      // 삭제된 행 → 빈 칸으로 처리
+      const blanks = deletedRecords.filter(b => b.file === hf.label);
+      if (blanks.length > 0) {
+        const contentCellIdx = calibrateContentCellIdx(dec);
+        for (const rb of blanks) {
+          applyRowBlank(dec, rb, contentCellIdx);
+          total += 1;
+          detailLines.push('  • ' + rb.origName + ' (' + rb.origEmp + ') ' + rb.date + ' [행 삭제→빈칸]');
+        }
+      }
+      // 평일야간/휴일조기 V 체크 수정
+      const vFixes = buildVCorrections(hf.label);
+      if (vFixes.length > 0) {
+        const lenBefore = dec.length;
+        dec = applyVFix(dec, vFixes);
+        if (dec.length !== lenBefore) {
+          total += vFixes.length;
+          for (const vf of vFixes) {
+            const tags = [];
+            if (vf.wantNight !== vf.origNight) tags.push('평일야간' + (vf.wantNight ? '추가' : '제거'));
+            if (vf.wantHol !== vf.origHol) tags.push('휴일조기' + (vf.wantHol ? '추가' : '제거'));
+            detailLines.push('  • ' + vf.origName + ' (' + vf.origEmp + ') ' + vf.date + ' [V체크: ' + tags.join(', ') + ']');
+          }
+        }
+      }
+      if (total === 0) continue;
+      sec.content = pako.deflateRaw(dec);
+      if ('size' in sec) sec.size = sec.content.length;
+      const out = CFB.write(cfb, { type: 'array' });
+      const outName = hf.file.name.replace(/\.hwp$/i, '') + '_수정본.hwp';
+      outputFiles.push({ name: outName, data: out });
+      madeFiles.push(hf.file.name + ' (' + total + '곳)\n' + detailLines.join('\n'));
+    } catch (e) {
+      failed.push(hf.file.name + ' (' + e.message + ')');
+    }
+  }
+
+  if (outputFiles.length === 1) {
+    // 파일 1개: 단일 다운로드
+    downloadBytes(outputFiles[0].data, outputFiles[0].name);
+  } else if (outputFiles.length > 1) {
+    // 파일 여러 개: ZIP으로 묶어서 한 번에 다운로드
+    const zip = new JSZip();
+    for (const f of outputFiles) zip.file(f.name, new Uint8Array(f.data));
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `시간외근무일지_수정본_${stamp}.zip`;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  }
+
+  let msg = madeFiles.length
+    ? '✅ 수정본 다운로드 완료:\n' + madeFiles.join('\n') + (outputFiles.length > 1 ? '\n\n→ ZIP 파일 1개로 묶어서 다운로드됩니다.' : '') + (hasVChanges ? '\n\n한글로 열어 V 체크 항목을 확인하세요.' : '')
+    : '⚠️ 해당 항목이 업로드한 파일에서 발견되지 않았습니다.';
+  if (skipped.length) msg += '\n\n※ 글자수가 달라 자동수정 못한 항목(한글에서 직접 수정):\n' + skipped.join(', ');
+  if (failed.length) msg += '\n\n❌ 처리 실패:\n' + failed.join('\n');
+  alert(msg);
+}
+
+function copyErrContent(ev, btn) {
+  ev.stopPropagation();
+  const t = btn.getAttribute('data-c') || '';
+  if (!t) return;
+  navigator.clipboard.writeText(t).then(() => {
+    const o = btn.textContent;
+    btn.textContent = '✅ 복사됨! 한글에서 Ctrl+F로 붙여넣기';
+    setTimeout(() => { btn.textContent = o; }, 1600);
+  }).catch(() => alert('복사 실패: 내용을 직접 선택해 복사해주세요.'));
+}
+
+async function parseAll() {
+  if (!hwpFiles.length) return;
+  document.getElementById('ldg').classList.add('on');
+  document.getElementById('pBtn').disabled = true;
+  RECORDS = []; deletedRecords = [];
+
+  for (let fi = 0; fi < hwpFiles.length; fi++) {
+    const {file, label} = hwpFiles[fi];
+    try {
+      const recs = await parseHWP(await file.arrayBuffer(), label);
+      RECORDS.push(...recs);
+    } catch(e) {
+      alert(`❌ ${file.name}\n${e.message}`);
+    }
+  }
+
+  // 근무시간 분리 자동 적용
+  RECORDS = splitAllRecords(RECORDS);
+
+  const errLines = [];
+  ERR_ROWS = [];
+  let hasBlockingError = false;
+
+  // 평일(휴일 아님) 09:00~18:00 정상근무 시간대 내부에 걸친 시간외 감지
+  // → 이 도구는 정상 근무시간 안에서 시간외가 발생할 이유가 없으므로(유연근무 대상 아님),
+  //   휴일이 아닌 모든 평일에 이런 시간외가 뜨면 날짜를 잘못 기재했을 가능성이 높아 차단한다.
+  if (RECORDS.length) {
+    const seenTime = new Set();
+    for (const r of RECORDS) {
+      const key = r._pageNo + '|' + r._rowNo + '|' + r.date;
+      if (seenTime.has(key)) continue;
+      seenTime.add(key);
+      if (!r.date || !r.start || !r.end) continue;
+      const dt = new Date(r.date + 'T00:00:00');
+      const dow = dt.getDay();
+      const ch = getCustomHolidays();
+      const isHoliday = dow === 0 || dow === 6 || !!HOLIDAYS[r.date] || !!ch[r.date];
+      if (isHoliday) continue; // 휴일은 대상 아님
+      const s = toMin(r.start);
+      let e = toMin(r.end);
+      if (e <= s) e += 1440;
+      const hidS = Math.max(s, 9 * 60), hidE = Math.min(e, 18 * 60);
+      if (hidE - hidS <= 0) continue;
+      const loc = `[${r.file}] ${r._pageNo}페이지 ${r._rowNo}번째 행${r.date ? ` (${r.date})` : ''}`;
+      hasBlockingError = true;
+      ERR_ROWS.push({ type: '정상근무시간대(09-18) 시간외 감지', status: '수정 필요',
+        name: r.name, empno: r.empno, date: r.date, time: `${r.start}~${r.end}`,
+        sugName: '', sugEmp: '', content: r.content || '', loc });
+      errLines.push(`<div class="err-item" style="padding:6px 4px;border-radius:6px">
+        <div><span style="color:var(--red)">●</span> <b>정상근무시간대(09-18) 시간외 감지</b>: ${escHtml(r.name)} ${escHtml(r.date)} ${escHtml(r.start)}~${escHtml(r.end)} — 날짜 오타 의심<span style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;background:var(--red-bg);color:var(--red)">🚫 수정 필요</span><br><span style="color:var(--t3);padding-left:14px">↳ ${escHtml(loc)}</span></div>
+      </div>`);
+    }
+  }
+
+  // 사원명부 로드 상태일 때 이름·사번 오류 검사
+  if (masterLoaded && RECORDS.length) {
+    const seen = new Set();
+    for (const r of RECORDS) {
+      const key = r.empno + '|' + r._pageNo + '|' + r._rowNo + '|' + r.date;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const info = getInfo(r.empno);
+      const nameMatches = masterByName[r.name] || [];
+      // 이름칸에 들어온 값을 '사번'으로 조회 → 명부에 있으면 사번/이름이 뒤바뀐 것(사번은 정확)
+      const swapInfo = (!info && /\d/.test(r.name)) ? getInfo(r.name) : null;
+      const loc = `[${r.file}] ${r._pageNo}페이지 ${r._rowNo}번째 행${r.date ? ` (${r.date})` : ''}`;
+      let head = '';
+      let typeLabel = '';
+      let blocking = false;
+      if (!info && nameMatches.length) {
+        // 사번은 명부에서 못 찾았지만 이름은 명부에 있음 → 사번 오타일 가능성이 높은 실제 오류
+        const sugList = nameMatches.map(m => m.empno).join(', ');
+        head = `<b>사번 오류 의심</b>: 근무일지 <b>${escHtml(r.name)}</b> (${escHtml(r.empno)}) → 명부상 사번 ${escHtml(sugList)}`;
+        typeLabel = '사번 오류 의심';
+        blocking = true;
+      } else if (!info && swapInfo) {
+        // 이름칸 값이 명부에 존재하는 사번 → 사번/이름을 서로 바꿔 기재한 경우
+        // (사번은 정확하나 자리가 뒤바뀜) → 실제 오류이므로 수정 필요로 분류
+        head = `<b>사번/이름 뒤바뀜</b>: 이름칸에 사번 <b>${escHtml(r.name)}</b> 입력됨 → 명부상 <b>${escHtml(swapInfo.name)}</b> (사번 ${escHtml(r.name)})`;
+        typeLabel = '사번/이름 뒤바뀜';
+        blocking = true;
+      } else if (!info) {
+        // 사번+이름 모두 명부에 없음 → 퇴사자 등 정상일 수 있음 (진행 차단 안 함)
+        head = `<b>사번 미조회</b>: ${escHtml(r.name)} (${escHtml(r.empno)})`;
+        typeLabel = '사번 미조회';
+        blocking = false;
+      } else if (info.name !== r.name) {
+        // 공백만 다른 경우(예: 2글자 이름 '김현'을 '김 현'처럼 띄어 씀)는 실제 오류가
+        // 아니므로 명부 이름으로 조용히 교정한 뒤 정상 통과시킨다.
+        if (info.name.replace(/\s+/g, '') === r.name.replace(/\s+/g, '')) {
+          r.name = info.name;
+          continue;
+        }
+        head = `<b>이름 불일치</b>: 근무일지 <b>${escHtml(r.name)}</b> → 명부 <b>${escHtml(info.name)}</b> (${escHtml(r.empno)})`;
+        typeLabel = '이름 불일치';
+        blocking = true;
+      } else {
+        continue;
+      }
+      if (blocking) hasBlockingError = true;
+      const sugName = info ? info.name : (swapInfo ? swapInfo.name : r.name);
+      const sugEmp  = swapInfo ? r.name
+                    : (!info && nameMatches.length === 1) ? nameMatches[0].empno
+                    : r.empno;
+      ERR_ROWS.push({ type: typeLabel, status: blocking ? '수정 필요' : '진행 가능',
+        name: r.name, empno: r.empno, date: r.date, time: `${r.start}~${r.end}`,
+        sugName, sugEmp, content: r.content || '', loc });
+      const statusTag = blocking
+        ? `<span style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;background:var(--red-bg);color:var(--red)">🚫 수정 필요</span>`
+        : `<span style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;background:var(--green-bg);color:var(--green)">진행 가능</span>`;
+      errLines.push(`<div class="err-item" onclick="toggleErrDetail(this)" style="cursor:pointer;padding:6px 4px;border-radius:6px">
+        <div><span style="color:var(--red)">●</span> ${head}${statusTag} <span style="color:var(--t4);font-size:11px">▾</span><br><span style="color:var(--t3);padding-left:14px">↳ ${escHtml(loc)}</span></div>
+        <div class="err-detail" onclick="event.stopPropagation()" style="display:none;margin:6px 0 2px 14px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:6px">
+          <div style="color:var(--t2)">📅 ${escHtml(r.date)} &nbsp;·&nbsp; ⏰ ${escHtml(r.start)}~${escHtml(r.end)}</div>
+          <div style="margin-top:4px;color:var(--t2)">📝 근무내용: <span style="color:var(--t1)">${r.content ? escHtml(r.content) : '<i style="color:var(--t3)">(내용 없음)</i>'}</span></div>
+          ${r.content ? `<button onclick="copyErrContent(event,this)" data-c="${escHtml(r.content)}" style="margin-top:8px;padding:5px 10px;font-size:11px;border:1px solid var(--blue);background:transparent;color:var(--blue);border-radius:5px;cursor:pointer">📋 근무내용 복사 → 한글에서 Ctrl+F로 찾기</button>` : ''}
+          <div class="err-fix" data-page="${escHtml(String(r._pageNo))}" data-date="${escHtml(r.date)}" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <span style="font-size:11px;color:var(--t2);font-weight:600">올바른 값 →</span>
+              <label style="font-size:11px;color:var(--t3)">이름</label>
+              <input class="fix-name" data-orig="${escHtml(r.name)}" value="${escHtml(sugName)}" oninput="this.closest('.err-fix').dataset.touched='1';updateFixHint(this.closest('.err-fix'))" style="width:78px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:5px">
+              <label style="font-size:11px;color:var(--t3)">사번</label>
+              <input class="fix-emp" data-orig="${escHtml(r.empno)}" value="${escHtml(sugEmp)}" oninput="this.closest('.err-fix').dataset.touched='1';updateFixHint(this.closest('.err-fix'))" style="width:78px;padding:4px 6px;font-size:12px;border:1px solid var(--line);border-radius:5px">
+            </div>
+            <div class="fix-hint" style="margin-top:5px;font-size:11px;line-height:1.7"></div>
+          </div>
+        </div>
+      </div>`);
+    }
+  }
+
+  if (errLines.length) {
+    document.getElementById('errList').innerHTML = errLines.join('');
+    document.querySelectorAll('#errList .err-fix').forEach(b => updateFixHint(b));
+    document.getElementById('errModal').style.display = 'flex';
+  }
+
+  // "이름 불일치"/"사번 오류 의심"/"정상근무시간대 시간외 감지"처럼 실제 오류일 가능성이 높은
+  // 항목이 하나라도 있으면 이번 파싱 배치 전체를 목록에 올리지 않는다(일부만 빠지면 무엇이
+  // 빠졌는지 구분하기 어려우므로). 사번+이름이 모두 명부에 없는 경우(퇴사자 등)만 있을 때는
+  // 정상적으로 전체를 그대로 진행한다.
+  if (hasBlockingError) {
+    RECORDS = []; deletedRecords = [];
+  }
+
+  // 파일 필터 옵션 갱신
+  const labels = [...new Set(RECORDS.map(r => r.file))];
+  document.getElementById('fFile').innerHTML =
+    '<option value="">전체 파일</option>' + labels.map(l=>`<option value="${l}">${l}</option>`).join('');
+
+  const el = document.getElementById('ldg');
+  el.classList.remove('on');
+  if (masterLoaded) updateBadge();
+  updateParseButtons();
+  render();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   사원명부
+══════════════════════════════════════════════════════════════════ */
+let masterMap = {}, masterByName = {}, masterLoaded = false;
+
+function loadMaster(input) {
+  const f = input.files[0]; if (!f) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+    masterMap = {}; masterByName = {};
+    const NAME_KEYS  = ['사원','이름','성명','사원명','직원명','성 명'];
+    const EMPNO_KEYS = ['사번','사원번호','직원번호','사원 번호','번호'];
+    const DEPT_KEYS  = ['부서','소속','부서명','팀명','소속부서'];
+    for (const sn of wb.SheetNames) {
+      const data = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:''});
+      let hr = -1;
+      for (let i = 0; i < Math.min(data.length,10); i++) {
+        const r = data[i].map(c=>String(c).trim());
+        if (r.some(c=>NAME_KEYS.includes(c)) || r.some(c=>EMPNO_KEYS.includes(c))) { hr=i; break; }
+      }
+      if (hr < 0) continue;
+      const hdr = data[hr].map(c=>String(c).trim());
+      const cm = {};
+      hdr.forEach((h,i) => {
+        if (NAME_KEYS.includes(h)  && cm.name  === undefined) cm.name  = i;
+        if (EMPNO_KEYS.includes(h) && cm.empNo === undefined) cm.empNo = i;
+        if (DEPT_KEYS.includes(h)  && cm.dept  === undefined) cm.dept  = i;
+      });
+      if (cm.name === undefined) continue;
+      for (let i=hr+1; i<data.length; i++) {
+        const row=data[i];
+        const name=String(row[cm.name]??'').trim();
+        if (!name || name==='선택') continue;
+        const raw2 = cm.empNo !== undefined ? String(row[cm.empNo]??'').trim() : '';
+        const norm = raw2.replace(/^0+/,'');
+        const dept = cm.dept !== undefined ? String(row[cm.dept]??'').trim() : '';
+        const obj  = {name, dept};
+        if (raw2)  masterMap[raw2] = obj;
+        if (norm && norm !== raw2) masterMap[norm] = obj;
+        if (!masterByName[name]) masterByName[name] = [];
+        if (!masterByName[name].some(x => x.empno === raw2)) masterByName[name].push({ empno: raw2, dept });
+      }
+      break;
+    }
+    masterLoaded=true;
+    document.getElementById('mStatus').textContent=`📋 ${f.name.replace(/\.xlsx?$/i,'')}`;
+    updateBadge(); render();
+  };
+  reader.readAsArrayBuffer(f);
+}
+
+function updateBadge() {
+  const total=RECORDS.length, matched=RECORDS.filter(r=>getInfo(r.empno)).length;
+  const b=document.getElementById('mBadge');
+  b.style.display=total?'inline-flex':'none';
+  if (matched===total){b.className='mok';b.textContent=`✅ 전체 ${total}건 매칭`;}
+  else{b.className='mwarn';b.textContent=`⚠️ ${matched}/${total}건 매칭`;}
+}
+function getInfo(empno){ return masterMap[empno]||masterMap[empno.replace(/^0+/,'')]; }
+
+/* ══════════════════════════════════════════════════════════════════
+   완료 체크
+══════════════════════════════════════════════════════════════════ */
+function clearRecords(){if(!confirm('파싱된 목록을 모두 삭제하시겠습니까?'))return;RECORDS=[];render();}
+
+// 휴일조기출근 수동 토글
+function togHol(i) {
+  if (i < 0 || i >= RECORDS.length) return;
+  RECORDS[i].holiday_early = !RECORDS[i].holiday_early;
+  render();
+}
+
+// 평일야간출근 수동 토글
+function togNight(i) {
+  if (i < 0 || i >= RECORDS.length) return;
+  RECORDS[i].night_work = !RECORDS[i].night_work;
+  render();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   필터 / 렌더
+══════════════════════════════════════════════════════════════════ */
+function getF(){
+  const ff=document.getElementById('fFile').value,
+        ft=document.getElementById('fType').value,
+        fm=document.getElementById('fMatch').value,
+        sq=document.getElementById('fSch').value.trim(),
+        fs=document.getElementById('fSort').value;
+  const ch=getCustomHolidays();
+  const isHolDate=d=>{if(!d)return false;const dt=new Date(d+'T00:00:00'),dw=dt.getDay();return dw===0||dw===6||!!HOLIDAYS[d]||!!ch[d];};
+  const filtered = RECORDS.map((r,i)=>({...r,_i:i})).filter(r=>{
+    const isHol=isHolDate(r.date);
+    const tp=r.holiday_early?'holiday':r.night_work?'night':isHol?'hd':'wd';
+    if(ff&&r.file!==ff)return false;
+    if(ft&&tp!==ft)return false;
+
+    const info=getInfo(r.empno);
+    if(fm==='matched'&&!info)return false;
+    if(fm==='unmatched'&&info)return false;
+    if(sq&&!r.empno.includes(sq)&&!r.name.includes(sq)&&!(info&&info.name.includes(sq)))return false;
+    return true;
+  });
+  if(fs==='name')  filtered.sort((a,b)=>a.name.localeCompare(b.name,'ko')||a.date.localeCompare(b.date));
+  if(fs==='empno') filtered.sort((a,b)=>a.empno.localeCompare(b.empno)||a.date.localeCompare(b.date));
+  return filtered;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   요일 / 공휴일 표시
+══════════════════════════════════════════════════════════════════ */
+const HOLIDAYS_BASE = {
+  // 2025
+  '2025-01-01':'신정',
+  '2025-01-27':'임시공휴일', // 정부지정 설날 임시공휴일
+  '2025-01-28':'설날연휴','2025-01-29':'설날','2025-01-30':'설날연휴',
+  '2025-03-01':'삼일절','2025-03-03':'대체공휴일',
+  '2025-05-05':'어린이날','2025-05-06':'대체공휴일', // 부처님오신날(5/5)이 어린이날과 겹쳐 5/6 대체
+  '2025-06-06':'현충일',
+  // 제헌절: 2026년부터 공휴일 재지정 (2025년은 공휴일 아님)
+  '2025-08-15':'광복절',
+  '2025-10-03':'개천절',
+  '2025-10-05':'추석연휴','2025-10-06':'추석','2025-10-07':'추석연휴','2025-10-08':'대체공휴일', // 10/5(일)과 겹쳐 10/8 대체
+  '2025-10-09':'한글날','2025-12-25':'크리스마스',
+  // 2026
+  '2026-01-01':'신정',
+  '2026-02-16':'설날연휴','2026-02-17':'설날','2026-02-18':'설날연휴',
+  '2026-03-01':'삼일절','2026-03-02':'대체공휴일', // 3/1(일)→3/2(월) 대체
+  '2026-05-05':'어린이날',
+  '2026-05-24':'부처님오신날','2026-05-25':'대체공휴일', // 5/24(일)→5/25(월) 대체
+  '2026-06-03':'지방선거', // 제9회 전국동시지방선거 임시공휴일
+  '2026-06-06':'현충일', // 현충일은 대체공휴일 대상 제외 (법적 규정)
+  '2026-07-17':'제헌절', // 2026년부터 공휴일 재지정
+  '2026-08-15':'광복절','2026-08-17':'대체공휴일', // 8/15(토)→8/17(월) 대체
+  '2026-09-24':'추석연휴','2026-09-25':'추석','2026-09-26':'추석연휴', // 추석연휴+토요일: 대체없음
+  '2026-10-03':'개천절','2026-10-05':'대체공휴일', // 10/3(토)→10/5(월) 대체
+  '2026-10-09':'한글날','2026-12-25':'크리스마스',
+};
+
+// 매년 반복 적용 기념일 (연도 무관 고정)
+function getFixedAnnualHolidays() {
+  const map = {};
+  const curY = new Date().getFullYear();
+  for (let y = 2024; y <= curY + 2; y++) {
+    map[`${y}-05-01`] = '근로자의날';
+    map[`${y}-05-15`] = '창립기념일';
+    map[`${y}-08-21`] = '노조창립기념일';
+  }
+  return map;
+}
+// 회사 기념일 (초록색 표시용)
+const COMPANY_HOL_NAMES = new Set(['근로자의날','창립기념일','노조창립기념일']);
+function isCompanyHol(dateStr) {
+  const name = HOLIDAYS[dateStr] || getCustomHolidays()[dateStr];
+  return !!name && COMPANY_HOL_NAMES.has(name);
+}
+
+// 공휴일 자동 업데이트 (Nager.Date API, 30일 캐시)
+let HOLIDAYS = { ...HOLIDAYS_BASE, ...getFixedAnnualHolidays() };
+(async function fetchHolidays() {
+  const CACHE_KEY = 'erp_holidays_cache_v2', CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
+  const applyAll = (apiData) => {
+    // 우선순위: 회사기념일 > HOLIDAYS_BASE > API
+    HOLIDAYS = { ...apiData, ...HOLIDAYS_BASE, ...getFixedAnnualHolidays() };
+    if (typeof render === 'function') render();
+    if (typeof renderCal === 'function') renderCal();
+  };
+  try {
+    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      applyAll(cached.data); return;
+    }
+    const years = [new Date().getFullYear(), new Date().getFullYear() + 1];
+    const nameMap = {
+      "New Year's Day":'신정', "Independence Movement Day":'삼일절',
+      "Children's Day":'어린이날', "Buddha's Birthday":'부처님오신날',
+      "Memorial Day":'현충일', "Constitution Day":'제헌절',
+      "Liberation Day":'광복절', "Chuseok":'추석', "Chuseok Holiday":'추석연휴',
+      "National Foundation Day":'개천절', "Hangul Day":'한글날',
+      "Christmas Day":'크리스마스', "Lunar New Year":'설날',
+      "Lunar New Year Holiday":'설날연휴', "Substitution Holiday":'대체공휴일',
+    };
+    const fetched = {};
+    for (const yr of years) {
+      const res = await fetch(`https://date.nager.at/api/v3/publicholidays/${yr}/KR`);
+      if (!res.ok) continue;
+      const list = await res.json();
+      for (const h of list) {
+        const label = nameMap[h.localName] || nameMap[h.name] || h.localName || h.name;
+        fetched[h.date] = label;
+      }
+    }
+    if (Object.keys(fetched).length > 0) {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data: fetched }));
+    }
+    applyAll(fetched);
+  } catch(e) {
+    // 네트워크 오류 시 기본값 + 회사기념일 적용
+    HOLIDAYS = { ...HOLIDAYS_BASE, ...getFixedAnnualHolidays() };
+    if (typeof render === 'function') render();
+    if (typeof renderCal === 'function') renderCal();
+  }
+})();
+
+const DAY_KR = ['일','월','화','수','목','금','토'];
+
+// index.html 달력과 공유 (localStorage: soosan_cal_events_v1)
+function getCustomHolidays() {
+  const map = {};
+  // calEvs는 달력과 공유 (메모리)
+  (typeof calEvs !== 'undefined' ? calEvs : JSON.parse(localStorage.getItem('soosan_cal_events_v1')||'[]'))
+    .filter(e=>e.type==='holiday'||e.type==='company').forEach(e=>{ map[e.date]=e.name; });
+  return map;
+}
+
+function dayCell(dateStr) {
+  if (!dateStr || !dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) return '<span style="color:var(--t4)">-</span>';
+  const dt   = new Date(dateStr + 'T00:00:00');
+  const dow  = dt.getDay();   // 0=일, 6=토
+  const dayKr = DAY_KR[dow];
+  const customHols = getCustomHolidays();
+  const hName = HOLIDAYS[dateStr] || customHols[dateStr];
+  const isSat = dow === 6;
+  const isSunOrHol = dow === 0 || !!hName;
+  const isCompany = !!hName && COMPANY_HOL_NAMES.has(hName);
+
+  // 색상: 회사기념일=초록, 토요일+공휴일=빨강, 토요일=파랑, 일/공휴일=빨강
+  const color = isCompany
+    ? 'var(--green)'
+    : (isSat && !!hName)
+      ? 'var(--red)'
+      : isSat
+        ? 'var(--blue)'
+        : isSunOrHol
+          ? 'var(--red)'
+          : 'var(--t2)';
+
+  const fw = (isSat || isSunOrHol) ? '700' : '500';
+
+  if (hName) {
+    // 공휴일: 요일 + 아래줄에 공휴일명
+    return `<span style="color:${color};font-weight:${fw};font-size:13px;line-height:1.3;display:inline-block;text-align:center">${dayKr}<br><span style="font-size:10px">${hName}</span></span>`;
+  }
+  return `<span style="color:${color};font-weight:${fw};font-size:13px">${dayKr}</span>`;
+}
+
+
+/* ══════════════════════════════════════════════════════
+   달력 (overtime_erp.html 전용 + index.html 공유)
+══════════════════════════════════════════════════════ */
+const CAL_EV_KEY = 'soosan_cal_events_v1';
+let calEvs = JSON.parse(localStorage.getItem(CAL_EV_KEY) || '[]');
+function saveCalEvs() { localStorage.setItem(CAL_EV_KEY, JSON.stringify(calEvs)); }
+
+const todayR = new Date();
+let calY = todayR.getFullYear(), calM = todayR.getMonth();
+
+function calMove(d) { calM+=d; if(calM>11){calM=0;calY++;} if(calM<0){calM=11;calY--;} renderCal(); }
+function calGoToday() { calY=todayR.getFullYear(); calM=todayR.getMonth(); renderCal(); }
+function toYMD(y,m,d) { return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
+
+function renderCal() {
+  document.getElementById('calMonthLabel').textContent = `${calY}년 ${calM+1}월`;
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = '';
+  const DOW = ['일','월','화','수','목','금','토'];
+  DOW.forEach((d,i) => {
+    const el = document.createElement('div');
+    el.className = 'cal-dow' + (i===0?' sun':i===6?' sat':'');
+    el.textContent = d; grid.appendChild(el);
+  });
+  const first  = new Date(calY, calM, 1).getDay();
+  const last   = new Date(calY, calM+1, 0).getDate();
+  const pLast  = new Date(calY, calM, 0).getDate();
+  const todYMD = toYMD(todayR.getFullYear(), todayR.getMonth(), todayR.getDate());
+
+  // 이전달
+  for (let i=first-1; i>=0; i--) {
+    const pm = calM-1<0?11:calM-1, py = calM-1<0?calY-1:calY;
+    grid.appendChild(makeCalCell(py,pm,pLast-i,toYMD(py,pm,pLast-i),true,todYMD));
+  }
+  // 이번달
+  for (let d=1; d<=last; d++) grid.appendChild(makeCalCell(calY,calM,d,toYMD(calY,calM,d),false,todYMD));
+  // 다음달
+  const remain = (7-(first+last)%7)%7;
+  for (let d=1; d<=remain; d++) {
+    const nm = calM+1>11?0:calM+1, ny = calM+1>11?calY+1:calY;
+    grid.appendChild(makeCalCell(ny,nm,d,toYMD(ny,nm,d),true,todYMD));
+  }
+}
+
+function makeCalCell(y,m,d,ymd,other,todYMD) {
+  const dt  = new Date(ymd+'T00:00:00'), dow = dt.getDay();
+  const hName  = HOLIDAYS[ymd];
+  const cHols  = calEvs.filter(e=>e.date===ymd);
+  const userHol= cHols.some(e=>e.type==='holiday');
+  const isHol  = !!hName || userHol;
+
+  const cell = document.createElement('div');
+  let cls = 'cal-cell';
+  if (other) cls += ' other-month';
+  if (dow===6) cls += ' sat';
+  if (dow===0) cls += ' sun';
+  if (isHol) { if (isCompanyHol(ymd)) cls += ' is-company'; else cls += ' is-hol'; }
+  if (ymd===todYMD) cls += ' today';
+  cell.className = cls;
+  cell.onclick = () => openCMO(ymd);
+
+  const num = document.createElement('div');
+  num.className = 'cal-num'; num.textContent = d;
+  cell.appendChild(num);
+
+  if (hName) {
+    const hn = document.createElement('span');
+    hn.className = 'cal-hol-name'; hn.textContent = hName;
+    cell.appendChild(hn);
+  }
+  cHols.forEach(ev => {
+    const tag = document.createElement('div');
+    tag.className = `cal-ev ev-${ev.type}`; tag.textContent = ev.name;
+    cell.appendChild(tag);
+  });
+  return cell;
+}
+
+/* ── 관리자 인증 ─────────────────────────── */
+const ADMIN_HASH = '05de783ff8bb8cd3c9877bee63cf2e67a04178d83518bb47e9c02bc57c5a358a';
+let _adminUnlocked = false;
+
+async function _sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function requireAdmin(callback) {
+  if (_adminUnlocked) { callback(); return; }
+  const pw = prompt('관리자 비밀번호를 입력하세요.');
+  if (pw === null) return;
+  const hash = await _sha256(pw);
+  if (hash === ADMIN_HASH) {
+    _adminUnlocked = true;
+    callback();
+  } else {
+    alert('비밀번호가 올바르지 않습니다.');
+  }
+}
+
+function openCMO(date='') {
+  requireAdmin(() => {
+    document.getElementById('cmoDate').value = date || toYMD(calY,calM,1);
+    document.getElementById('cmoName').value = '';
+    document.getElementById('cmoType').value = 'company';
+    renderCMOList();
+    document.getElementById('cmo').style.display = 'flex';
+  });
+}
+function closeCMO() { document.getElementById('cmo').style.display = 'none'; }
+
+function saveCMOEvent() {
+  const date = document.getElementById('cmoDate').value;
+  const type = document.getElementById('cmoType').value;
+  const name = document.getElementById('cmoName').value.trim();
+  if (!date || !name) { alert('날짜와 일정명을 입력해주세요.'); return; }
+  calEvs.push({id:'ce'+Date.now(), date, type, name});
+  saveCalEvs(); renderCMOList(); renderCal(); render();
+  document.getElementById('cmoName').value = '';
+}
+
+function delCMOEvent(id) {
+  requireAdmin(() => {
+    calEvs = calEvs.filter(e=>e.id!==id);
+    saveCalEvs(); renderCMOList(); renderCal(); render();
+  });
+}
+
+function renderCMOList() {
+  const wrap = document.getElementById('cmoList');
+  if (!calEvs.length) {
+    wrap.innerHTML = '<div style="font-size:12px;color:var(--t3);text-align:center;padding:8px 0">등록된 일정이 없습니다.</div>';
+    return;
+  }
+  const TL = {company:'🏢',holiday:'🎌',custom:'📌'};
+  wrap.innerHTML = [...calEvs].sort((a,b)=>a.date.localeCompare(b.date)).map(e=>`
+    <div class="cmo-ev-item">
+      <div><span class="cmo-ev-name">${TL[e.type]||'📌'} ${e.name}</span>
+      <span class="cmo-ev-date">${e.date}</span></div>
+      <span class="cmo-ev-del" onclick="delCMOEvent('${e.id}')">✕</span>
+    </div>`).join('');
+}
+
+renderCal();
+
+
+/* ══════════════════════════════════════════════════════
+   엑셀 다운로드 (xlsx-js-style, Excel 2016 호환)
+   토스 스타일: 헤더 #3182F6, 짝수행 #EBF3FE, 테두리, 폰트 맑은고딕
+══════════════════════════════════════════════════════ */
+function downloadExcel() {
+  if (!RECORDS.length) { alert('파싱된 데이터가 없습니다.'); return; }
+
+  const DAY_KR = ['일','월','화','수','목','금','토'];
+  const typeLabel = { normal:'일반시간외', holiday:'휴일조기출근' };
+
+  const rows = RECORDS.map((r, i) => {
+    const info   = getInfo(r.empno);
+    const dept   = info ? info.dept || '' : '';
+    const hol    = r.holiday_early;
+    const night  = r.night_work;
+
+    let dayKr = '';
+    if (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) {
+      const dt = new Date(r.date + 'T00:00:00');
+      dayKr = DAY_KR[dt.getDay()];
+    }
+
+    const ch = getCustomHolidays();
+    const isHoliday = r.date && (() => {
+      const dt = new Date(r.date + 'T00:00:00');
+      const dow = dt.getDay();
+      return dow === 0 || dow === 6 || !!HOLIDAYS[r.date] || !!ch[r.date];
+    })();
+    const isBefore9 = r.start && r.start < '09:00';
+    const holMissing = isHoliday && isBefore9 && !hol;
+    const holWrong   = hol && (!isHoliday || !isBefore9);
+    // 휴일 09:00 이후 정상 일반시간외는 비고에 표기하지 않음
+    const noteParts = [
+      holMissing  ? '휴일조기출근누락가능' : '',
+      holWrong    ? '휴일조기출근오체크가능' : '',
+      night       ? '평일야간출근확인' : '',
+    ].filter(Boolean);
+    const notes = noteParts.join(' / ');
+
+    const holLabel  = hol ? (holWrong ? '체크(확인필요)' : '체크') : (holMissing ? '미체크(누락가능)' : '');
+    const nightLabel = night ? '체크(확인필요)' : '';
+    const type = isHoliday ? '휴일시간외' : '평일시간외';
+
+    return [
+      i + 1,
+      r.name || '',
+      dept,
+      r.empno || '',
+      r.date || '',
+      dayKr,
+      r.start || '',
+      r.end || '',
+      r.hours || '',
+      type,
+      nightLabel,
+      holLabel,
+      notes,
+      r.file || '',
+    ];
+  });
+
+  // ── 헤더 ───────────────────────────────────────────────────────────
+  const headers = ['순번','이름','부서','사번','근무일자','요일','시작','종료','시간수','근무유형','평일야간출근','휴일조기출근','비고','파일'];
+
+  // ── 스타일 정의 ────────────────────────────────────────────────────
+  const font_base  = { name:'맑은 고딕', sz:10 };
+  const font_hdr   = { name:'맑은 고딕', sz:10, bold:true, color:{ rgb:'FFFFFF' } };
+  const font_warn  = { name:'맑은 고딕', sz:10, color:{ rgb:'D97706' } };
+  const font_hol   = { name:'맑은 고딕', sz:10, color:{ rgb:'F04452' }, bold:true };
+
+
+  const border = {
+    top:    { style:'thin', color:{ rgb:'E2E5EA' } },
+    bottom: { style:'thin', color:{ rgb:'E2E5EA' } },
+    left:   { style:'thin', color:{ rgb:'E2E5EA' } },
+    right:  { style:'thin', color:{ rgb:'E2E5EA' } },
+  };
+  const border_hdr = {
+    top:    { style:'thin', color:{ rgb:'2170D8' } },
+    bottom: { style:'thin', color:{ rgb:'2170D8' } },
+    left:   { style:'thin', color:{ rgb:'2170D8' } },
+    right:  { style:'thin', color:{ rgb:'2170D8' } },
+  };
+
+  const fill_hdr  = { fgColor:{ rgb:'3182F6' }, patternType:'solid' };
+  const fill_even = { fgColor:{ rgb:'EBF3FE' }, patternType:'solid' };
+  const fill_warn = { fgColor:{ rgb:'FFF8E6' }, patternType:'solid' };
+
+  const align_c = { horizontal:'center', vertical:'center' };
+  const align_l = { horizontal:'left',   vertical:'center' };
+
+  // ── 워크시트 구성 ──────────────────────────────────────────────────
+  const wsData = [headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // 열 너비 설정
+  ws['!cols'] = [
+    {wch:5},   // 순번
+    {wch:9},   // 이름
+    {wch:18},  // 부서
+    {wch:8},   // 사번
+    {wch:12},  // 근무일자
+    {wch:5},   // 요일
+    {wch:7},   // 시작
+    {wch:7},   // 종료
+    {wch:7},   // 시간수
+    {wch:11},  // 근무유형
+    {wch:14},  // 휴일조기출근
+    {wch:14},  // 평일야간출근
+    {wch:18},  // 비고
+    {wch:20},  // 파일
+  ];
+
+  // 행 높이
+  ws['!rows'] = [{ hpt:20 }];
+  for (let i = 0; i < rows.length; i++) ws['!rows'].push({ hpt:18 });
+
+  const font_night  = { name:'맑은 고딕', sz:10, color:{ rgb:'7C3AED' }, bold:true };
+  const fill_night  = { fgColor:{ rgb:'F3E8FF' }, patternType:'solid' };
+
+  // 셀 스타일 적용
+  const colCount = headers.length;
+  for (let ri = 0; ri < wsData.length; ri++) {
+    for (let ci = 0; ci < colCount; ci++) {
+      const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
+      if (!ws[addr]) ws[addr] = { v: '', t:'s' };
+
+      const isHdr  = ri === 0;
+      const isEven = !isHdr && ri % 2 === 0;
+      const row    = isHdr ? null : rows[ri - 1];
+      // col 10=평일야간출근, col 11=휴일조기출근, col 9=근무유형
+      const isHolWarn  = row && (row[10] || '').includes('확인필요');
+      const isHolMiss  = row && (row[10] || '').includes('누락가능');
+      const isNight    = row && !!(row[11]);
+      const isHolidayRow = row && row[9] === '휴일시간외';
+
+      // fill
+      let fill;
+      if (isHdr)           fill = fill_hdr;
+      else if (isNight)    fill = fill_night;
+      else if (isHolWarn || isHolMiss) fill = fill_warn;
+      else if (isEven)     fill = fill_even;
+
+      // font
+      let font = font_base;
+      if (isHdr) font = font_hdr;
+      else if (ci === 11 && isNight)   font = font_night;
+      else if (ci === 10 && isHolWarn) font = font_warn;
+      else if (ci === 10 && isHolMiss) font = { ...font_warn, color:{ rgb:'F04452' } };
+      else if (ci === 9 && isHolidayRow) font = font_hol;
+      else if (ci === 5) {
+        const dayV = String(wsData[ri][ci]);
+        if (dayV==='토') font = { ...font_base, color:{ rgb:'3182F6' }, bold:true };
+        else if (dayV==='일') font = { ...font_base, color:{ rgb:'F04452' }, bold:true };
+      }
+
+      ws[addr].s = {
+        font,
+        fill,
+        border: isHdr ? border_hdr : border,
+        alignment: (ci===0||ci===5||ci===6||ci===7||ci===8||ci===10||ci===11) ? align_c : align_l,
+      };
+    }
+  }
+
+  // ── 통계 시트 ──────────────────────────────────────────────────────
+  const total   = RECORDS.length;
+  const holiday = RECORDS.filter(r=>r.holiday_early).length;
+  const nightW  = RECORDS.filter(r=>r.night_work).length;
+  const normal  = total - holiday;
+
+  const byFile = {};
+  const ch2 = getCustomHolidays();
+  const isHolDate2 = d => { if(!d) return false; const dt=new Date(d+'T00:00:00'),dw=dt.getDay(); return dw===0||dw===6||!!HOLIDAYS[d]||!!ch2[d]; };
+
+  RECORDS.forEach(r => { byFile[r.file] = (byFile[r.file]||0) + 1; });
+
+  // 사람별 통계
+  const byPerson = {};
+  RECORDS.forEach(r => {
+    const key = r.empno + '|' + r.name;
+    if (!byPerson[key]) {
+      const info = getInfo(r.empno);
+      byPerson[key] = { name:r.name, empno:r.empno, dept:(info&&info.dept)||'', total:0, hours:0, wd:0, hd:0, hol:0, night:0 };
+    }
+    const p = byPerson[key];
+    p.total++;
+    p.hours += parseFloat(r.hours) || 0;
+    if (r.holiday_early)          p.hol++;
+    else if (r.night_work)        p.night++;
+    else if (isHolDate2(r.date))  p.hd++;
+    else                          p.wd++;
+  });
+
+  // 요일별 통계
+  const DAY_KR_S = ['일','월','화','수','목','금','토'];
+  const byDow = {0:0,1:0,2:0,3:0,4:0,5:0,6:0};
+  RECORDS.forEach(r => { if(r.date){ const dw=new Date(r.date+'T00:00:00').getDay(); byDow[dw]=(byDow[dw]||0)+1; } });
+
+  // 시간수 합계
+  const totalHours = RECORDS.reduce((s,r)=>s+(parseFloat(r.hours)||0),0);
+  const wdNormal   = RECORDS.filter(r=>!r.holiday_early&&!r.night_work&&!isHolDate2(r.date)).length;
+  const hdNormal   = RECORDS.filter(r=>!r.holiday_early&&!r.night_work&&isHolDate2(r.date)).length;
+
+  // 경고 건수
+  const warnMissing = RECORDS.filter(r=>isHolDate2(r.date)&&r.start<'09:00'&&!r.holiday_early).length;
+  const warnWrong   = RECORDS.filter(r=>r.holiday_early&&(!isHolDate2(r.date)||!(r.start<'09:00'))).length;
+  const warnNight   = RECORDS.filter(r=>r.night_work).length;
+
+  const now2 = new Date();
+  const stamp2 = `${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,'0')}-${String(now2.getDate()).padStart(2,'0')}`;
+
+  const personRows = Object.values(byPerson)
+    .sort((a,b)=>a.name.localeCompare(b.name,'ko'))
+    .map(p=>[p.name, p.dept, p.empno, p.total, Math.round(p.hours*10)/10, p.wd, p.hd, p.hol, p.night]);
+
+  // 행 타입을 같이 저장 ('title'|'sec'|'hdr'|'data'|'empty')
+  const sec  = v => ({ _t:'sec',  row:[v,''] });
+  const hdr  = (...cols) => ({ _t:'hdr',  row:cols });
+  const data = (...cols) => ({ _t:'data', row:cols });
+  const empty = () => ({ _t:'empty', row:['',''] });
+  const title = (v, sub) => ({ _t:'title', row:[v, sub] });
+
+  const tagged = [
+    title('📊 시간외근무 통계 요약', `생성일: ${stamp2}`),
+    empty(),
+    sec('[ 전체 현황 ]'),
+    hdr('항목', '건수'),
+    data('전체 건수', total),
+    data('총 시간수 합계', Math.round(totalHours*10)/10 + ' 시간'),
+    empty(),
+    sec('[ 근무유형별 ]'),
+    hdr('유형', '건수'),
+    data('평일시간외', wdNormal),
+    data('휴일시간외 (V미체크)', hdNormal),
+    data('휴일조기출근 (V체크)', holiday),
+    data('평일야간출근 (V체크)', nightW),
+    empty(),
+    sec('[ 확인 필요 항목 ]'),
+    hdr('항목', '건수'),
+    data('휴일조기출근 누락 가능', warnMissing),
+    data('휴일조기출근 오체크 가능', warnWrong),
+    data('평일야간출근 확인 필요', warnNight),
+    empty(),
+    sec('[ 요일별 현황 ]'),
+    hdr('요일', '건수'),
+    ...DAY_KR_S.map((d,i) => data(d+'요일', byDow[i]||0)),
+    empty(),
+    sec('[ 파일별 현황 ]'),
+    hdr('파일명', '건수'),
+    ...Object.entries(byFile).map(([k,v]) => data(k, v)),
+    empty(),
+    sec('[ 사원별 현황 ]'),
+    hdr('이름', '소속', '사번', '건수', '시간수합계', '평일시간외', '휴일시간외', '휴일조기출근', '평일야간출근'),
+    ...personRows.map(r => data(...r)),
+  ];
+
+  const statsData = tagged.map(t => t.row);
+  const ws2 = XLSX.utils.aoa_to_sheet(statsData);
+  ws2['!cols'] = [{wch:10},{wch:20},{wch:8},{wch:6},{wch:10},{wch:10},{wch:10},{wch:12},{wch:12}];
+
+  let dataRowIdx = 0;
+  tagged.forEach((t, ri) => {
+    const colCount = t.row.length;
+    for (let ci = 0; ci < Math.max(colCount, 2); ci++) {
+      const addr = XLSX.utils.encode_cell({r:ri, c:ci});
+      if (!ws2[addr]) ws2[addr] = { v:'', t:'s' };
+      const isEvenData = t._t==='data' && dataRowIdx%2===0;
+      ws2[addr].s = {
+        font: t._t==='title' ? { name:'맑은 고딕', sz:12, bold:true, color:{rgb:'1D3557'} }
+            : t._t==='sec'   ? { name:'맑은 고딕', sz:10, bold:true, color:{rgb:'FFFFFF'} }
+            : t._t==='hdr'   ? { name:'맑은 고딕', sz:10, bold:true }
+            :                  { name:'맑은 고딕', sz:10 },
+        fill: t._t==='title' ? { fgColor:{rgb:'D6E4F7'}, patternType:'solid' }
+            : t._t==='sec'   ? { fgColor:{rgb:'3182F6'}, patternType:'solid' }
+            : t._t==='hdr'   ? { fgColor:{rgb:'BFD7F0'}, patternType:'solid' }
+            : isEvenData     ? fill_even : undefined,
+        border,
+        alignment: ci===0 ? align_l : align_c,
+      };
+    }
+    if (t._t==='data') dataRowIdx++;
+    else if (t._t!=='empty') dataRowIdx = 0;
+  });
+
+  // ── 워크북 생성 및 다운로드 ───────────────────────────────────────
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws,  '시간외근무_입력목록');
+  XLSX.utils.book_append_sheet(wb, ws2, '통계요약');
+
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+  const fname = `시간외근무_${stamp}.xlsx`;
+
+  XLSX.writeFile(wb, fname, { bookType:'xlsx', type:'binary', cellStyles:true });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ERP 양식 엑셀 다운로드 (시간외근무신청(NEW)_ENS 포맷)
+   피벗 구조: 행=사람, 열=날짜×5 (시작|종료|시간수|평일야간|휴일조기)
+══════════════════════════════════════════════════════════════════ */
+function closeWarnModal() { document.getElementById('warnModal').style.display = 'none'; }
+
+function checkAllWarns() {
+  document.querySelectorAll('#warnList input[type=checkbox]').forEach(b => b.checked = true);
+  updateWarnProgress();
+}
+function updateWarnProgress() {
+  const boxes = document.querySelectorAll('#warnList input[type=checkbox]');
+  const total = boxes.length, checked = [...boxes].filter(b => b.checked).length;
+  document.getElementById('warnProgress').textContent = `${checked} / ${total} 확인 완료`;
+  const btn = document.getElementById('warnDlBtn');
+  btn.disabled = checked < total;
+  btn.style.opacity = checked < total ? '0.4' : '1';
+  btn.style.cursor = checked < total ? 'not-allowed' : 'pointer';
+}
+
+function downloadERPExcel() {
+  const ch = getCustomHolidays();
+  const warns = [];
+  RECORDS.forEach((r, idx) => {
+    const hol = r.holiday_early;
+    const night = r.night_work;
+    const dt = new Date(r.date + 'T00:00:00');
+    const dow = dt.getDay();
+    const isHoliday = dow === 0 || dow === 6 || !!HOLIDAYS[r.date] || !!ch[r.date];
+    const isBefore9 = r.start && r.start < '09:00';
+    const holMissing = isHoliday && isBefore9 && !hol;
+    const holWrong   = hol && (!isHoliday || !isBefore9);
+    // 휴일 09:00 이후 출근(정상 일반시간외)은 조기출근 대상이 아니므로 경고하지 않음
+    if (holMissing)  warns.push({ idx, r, type: 'holMissing',  label: '휴일조기출근 누락 가능',     desc: `${r.name} (${r.date}) — 휴일 09:00 이전 출근인데 V 체크 없음`, color: 'var(--red)' });
+    if (holWrong)    warns.push({ idx, r, type: 'holWrong',    label: '휴일조기출근 오체크 가능',   desc: `${r.name} (${r.date}) — 평일이거나 09:00 이후인데 V 체크됨`, color: 'var(--red)' });
+    if (night)       warns.push({ idx, r, type: 'night',       label: '평일야간출근 V 체크 확인',   desc: `${r.name} (${r.date}) — 평일야간출근 체크 항목`, color: '#7C3AED' });
+  });
+
+  if (!warns.length) { doDownloadERPExcel(); return; }
+
+  const list = document.getElementById('warnList');
+  list.innerHTML = warns.map((w, i) => `
+    <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;background:var(--bg);border:1px solid var(--line);cursor:pointer">
+      <input type="checkbox" onchange="updateWarnProgress()" style="margin-top:2px;width:16px;height:16px;flex-shrink:0;accent-color:var(--blue)">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:${w.color}">${w.label}</div>
+        <div style="font-size:12px;color:var(--t2);margin-top:2px">${w.desc}</div>
+      </div>
+    </label>`).join('');
+  updateWarnProgress();
+  document.getElementById('warnModal').style.display = 'flex';
+}
+
+function doDownloadERPExcel() {
+  closeWarnModal();
+  // ── 연월 결정 (파싱 데이터 있으면 첫 레코드 기준, 없으면 현재 월) ──
+  let yr, mo;
+  if (RECORDS.length) {
+    const firstDate = [...RECORDS].sort((a,b)=>a.date.localeCompare(b.date))[0].date;
+    [yr, mo] = firstDate.split('-').map(Number);
+  } else {
+    const now = new Date();
+    yr = now.getFullYear(); mo = now.getMonth() + 1;
+  }
+  const daysInMonth = new Date(yr, mo, 0).getDate();
+  const DAY_KR = ['일','월','화','수','목','금','토'];
+  const dates = Array.from({length:daysInMonth}, (_,i)=>{
+    const d = i + 1;
+    return `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  });
+
+  // ── 사람별 레코드 그룹화 ───────────────────────────────────────
+  // key: empno|name → { name, empno, dept, workType, rows:[ {date→record}[] ] }
+  const personMap = new Map();
+  for (const r of RECORDS) {
+    const key = r.empno + '|' + r.name;
+    if (!personMap.has(key)) {
+      const info = getInfo(r.empno);
+      personMap.set(key, {
+        name: r.name,
+        empno: r.empno,
+        dept: (info && info.dept) ? info.dept : (r.file || ''),
+        workType: '직원(기본)',
+        dateSlots: {},   // date → [records...]
+      });
+    }
+    const p = personMap.get(key);
+    if (!p.dateSlots[r.date]) p.dateSlots[r.date] = [];
+    p.dateSlots[r.date].push(r);
+  }
+
+  // 사람별 블록 생성: maxSlots개 행, A~D는 세로 병합, 날짜 컬럼은 행별로 각 세그먼트
+  // personBlocks: [{name, empno, dept, workType, maxSlots, slots:[{date→record}]}]
+  const personBlocks = [];
+  for (const [, p] of personMap) {
+    const maxSlots = Math.max(...Object.values(p.dateSlots).map(a=>a.length));
+    const slots = Array.from({length:maxSlots}, (_,si) => {
+      const entries = {};
+      for (const [date, arr] of Object.entries(p.dateSlots)) {
+        if (arr[si]) entries[date] = arr[si];
+      }
+      return entries;
+    });
+    personBlocks.push({name:p.name, empno:p.empno, dept:p.dept, workType:p.workType, maxSlots, slots});
+  }
+
+  // ── 열 매핑 ────────────────────────────────────────────────────
+  // A(0)=성명 B(1)=사번 C(2)=소속부서 D(3)=근무유형
+  // E~: day1[시작|종료|시간수|평일야간|휴일조기] day2[...] ...
+  const FIXED = 4;
+  const COLS_PER_DAY = 5;
+  const totalCols = FIXED + daysInMonth * COLS_PER_DAY;
+  const colIdx = (dayIdx, sub) => FIXED + dayIdx * COLS_PER_DAY + sub;
+  const encCell = (r, c) => XLSX.utils.encode_cell({r, c});
+
+  // ── 스타일 상수 ────────────────────────────────────────────────
+  const borderGray = {
+    top:   {style:'thin', color:{rgb:'AAAAAA'}},
+    bottom:{style:'thin', color:{rgb:'AAAAAA'}},
+    left:  {style:'thin', color:{rgb:'AAAAAA'}},
+    right: {style:'thin', color:{rgb:'AAAAAA'}},
+  };
+  const sTitle = { // Row 0: 타이틀
+    font:      {name:'맑은 고딕', sz:20, bold:true, color:{rgb:'000000'}},
+    alignment: {horizontal:'left', vertical:'center'},
+  };
+  const sHdrGreen = { // Row 1~2: 헤더
+    font:      {name:'맑은 고딕', sz:10, bold:true, color:{rgb:'000000'}},
+    fill:      {fgColor:{rgb:'DAEEF3'}, patternType:'solid'},
+    border:    borderGray,
+    alignment: {horizontal:'center', vertical:'center', wrapText:true},
+  };
+  const sData = { // 일반 데이터 셀
+    font:      {name:'맑은 고딕', sz:10},
+    border:    borderGray,
+    alignment: {vertical:'center'},
+  };
+  const sHours = { // 시간수 셀 (숫자, #,##0.0)
+    font:      {name:'맑은 고딕', sz:10},
+    numFmt:    '#,##0.0',
+    border:    borderGray,
+    alignment: {horizontal:'right', vertical:'center'},
+  };
+  const sCheck = { // 0/1 셀 (평일야간, 휴일조기)
+    font:      {name:'맑은 고딕', sz:10},
+    border:    borderGray,
+    alignment: {horizontal:'center', vertical:'center'},
+  };
+
+  // ── 워크시트 빌드 ──────────────────────────────────────────────
+  const ws = {};
+  const setCell = (r, c, v, s, t) => {
+    const a = encCell(r, c);
+    const cell = {v, s};
+    if (t) cell.t = t;
+    else if (typeof v === 'number') cell.t = 'n';
+    else cell.t = 's';
+    ws[a] = cell;
+  };
+
+  const R_TITLE = 0, R_DATE = 1, R_HDR = 2, R_DATA = 3;
+
+  // Row 0: 타이틀
+  setCell(R_TITLE, 0, `시간외근무신청(ERP)`, sTitle);
+  for (let c = 1; c < totalCols; c++) setCell(R_TITLE, c, '', sTitle);
+
+  // Row 1: 날짜 헤더 + "기본정보"
+  setCell(R_DATE, 0, '기본정보', sHdrGreen);
+  for (let c = 1; c < FIXED; c++) setCell(R_DATE, c, '', sHdrGreen);
+  dates.forEach((date, di) => {
+    const dt = new Date(date + 'T00:00:00');
+    const ch = getCustomHolidays();
+    const dow = dt.getDay();
+    const hName = HOLIDAYS[date] || ch[date];
+    const label = `${mo}/${di+1} (${DAY_KR[dow]})${hName ? '\n'+hName : ''}`;
+    setCell(R_DATE, colIdx(di, 0), label, sHdrGreen);
+    for (let s = 1; s < COLS_PER_DAY; s++) setCell(R_DATE, colIdx(di, s), '', sHdrGreen);
+  });
+
+  // Row 2: 서브 헤더
+  ['성명','사번','소속부서','근무유형'].forEach((h, c) => setCell(R_HDR, c, h, sHdrGreen));
+  const subHdrs = ['시작시간','종료시간','시간수','평일야간출근','휴일조기출근'];
+  dates.forEach((_,di) => subHdrs.forEach((h, s) => setCell(R_HDR, colIdx(di,s), h, sHdrGreen)));
+
+  // Row 3+: 데이터 (사람별 블록, A~D 세로 병합)
+  const merges = [
+    {s:{r:R_TITLE,c:0}, e:{r:R_TITLE,c:totalCols-1}},
+    {s:{r:R_DATE, c:0}, e:{r:R_DATE, c:FIXED-1}},
+  ];
+  dates.forEach((_,di) => merges.push({
+    s:{r:R_DATE, c:colIdx(di,0)},
+    e:{r:R_DATE, c:colIdx(di,COLS_PER_DAY-1)},
+  }));
+
+  let curR = R_DATA;
+  personBlocks.forEach(block => {
+    const rStart = curR;
+    const rEnd   = curR + block.maxSlots - 1;
+
+    // A~D: 모든 행에 값 반복 (병합 없음)
+    for (let ri = rStart; ri <= rEnd; ri++) {
+      setCell(ri, 0, block.name,     sData);
+      setCell(ri, 1, block.empno,    sData);
+      setCell(ri, 2, block.dept,     sData);
+      setCell(ri, 3, block.workType, sData);
+    }
+
+    // 날짜 컬럼: 슬롯별로 행 채움
+    block.slots.forEach((entries, si) => {
+      const r = rStart + si;
+      dates.forEach((date, di) => {
+        const rec = entries[date];
+        if (rec) {
+          setCell(r, colIdx(di,0), rec.start || '', sData);
+          setCell(r, colIdx(di,1), rec.end   || '', sData);
+          setCell(r, colIdx(di,2), rec.hours || 0,  sHours);
+          setCell(r, colIdx(di,3), rec.night_work    ? 1 : 0, sCheck);
+          setCell(r, colIdx(di,4), rec.holiday_early ? 1 : 0, sCheck);
+        } else {
+          setCell(r, colIdx(di,0), '', sData);
+          setCell(r, colIdx(di,1), '', sData);
+          setCell(r, colIdx(di,2), '', sData);
+          setCell(r, colIdx(di,3), '', sData);
+          setCell(r, colIdx(di,4), '', sData);
+        }
+      });
+    });
+
+    curR += block.maxSlots;
+  });
+
+  ws['!merges'] = merges;
+
+  // ── 열 너비 / 행 높이 ─────────────────────────────────────────
+  ws['!cols'] = [
+    {wch:10}, // 성명
+    {wch:9},  // 사번
+    {wch:22}, // 소속부서
+    {wch:10}, // 근무유형
+    ...Array.from({length: daysInMonth * COLS_PER_DAY}, (_,i) => {
+      const sub = i % COLS_PER_DAY;
+      return {wch: sub === 2 ? 7 : sub >= 3 ? 9 : 8}; // 시간수7 평일야간/휴일조기9 시작/종료8
+    }),
+  ];
+  ws['!rows'] = [
+    {hpt:38}, // 타이틀
+    {hpt:30}, // 날짜
+    {hpt:30}, // 헤더
+    ...Array.from({length: curR - R_DATA}, ()=>({hpt:20})),
+  ];
+
+  // ── ref 설정 ──────────────────────────────────────────────────
+  ws['!ref'] = XLSX.utils.encode_range({
+    s:{r:0,c:0},
+    e:{r: curR - 1, c: totalCols - 1},
+  });
+
+  // ── 워크북 저장 ───────────────────────────────────────────────
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '시간외근무신청');
+
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+  XLSX.writeFile(wb, `시간외근무신청(ERP)_${stamp}.xlsx`, {bookType:'xlsx', type:'binary', cellStyles:true});
+}
+
+function getOverlapSet() {
+  const groups = {};
+  RECORDS.forEach((r, i) => {
+    const key = r.empno + '|' + r.date;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ r, i });
+  });
+  const overlaps = new Set();
+  for (const entries of Object.values(groups)) {
+    if (entries.length < 2) continue;
+    for (let a = 0; a < entries.length; a++) {
+      for (let b = a + 1; b < entries.length; b++) {
+        const ra = entries[a].r, rb = entries[b].r;
+        let aS = toMin(ra.start), aE = toMin(ra.end);
+        let bS = toMin(rb.start), bE = toMin(rb.end);
+        if (aE <= aS) aE += 1440;
+        if (bE <= bS) bE += 1440;
+        if (aS < bE && bS < aE) {
+          overlaps.add(entries[a].i);
+          overlaps.add(entries[b].i);
+        }
+      }
+    }
+  }
+  return overlaps;
+}
+
+function deleteRec(i) {
+  const r = RECORDS[i];
+  if (!confirm(`${r.name} (${r.date}) 행을 삭제하시겠습니까?\n\n수정본 다운로드 시 해당 행이 빈 칸으로 처리됩니다.`)) return;
+  deletedRecords.push({ origName: r.name, origEmp: r.empno, date: r.date, file: r.file });
+  RECORDS.splice(i, 1);
+  render();
+}
+
+function render(){
+  const fl=getF(),total=RECORDS.length;
+  const ch=getCustomHolidays();
+  const isHolDate=d=>{if(!d)return false;const dt=new Date(d+'T00:00:00'),dw=dt.getDay();return dw===0||dw===6||!!HOLIDAYS[d]||!!ch[d];};
+  const holiday=RECORDS.filter(r=>r.holiday_early).length;
+  const nightW=RECORDS.filter(r=>r.night_work).length;
+  const holNormal=RECORDS.filter(r=>!r.holiday_early&&isHolDate(r.date)).length;
+  const wdNormal=RECORDS.filter(r=>!r.holiday_early&&!isHolDate(r.date)).length;
+  document.getElementById('stT').textContent=total;
+  document.getElementById('stN').textContent=wdNormal;
+  document.getElementById('stHN').textContent=holNormal;
+  document.getElementById('stH').textContent=holiday;
+  document.getElementById('stNW').textContent=nightW;
+  document.getElementById('lBadge').textContent=fl.length+'건';
+
+  if(!RECORDS.length){
+    document.getElementById('tBody').innerHTML='';return;
+  }
+
+  // 겹치는 시간 감지
+  const overlapSet = getOverlapSet();
+
+  const NIGHT_TIP = '평일 정상 출근시간에 출근하지 않고 야간에 출근한 경우만 체크해야 합니다.';
+  const HOL_MISS_TIP = '휴일에 09:00 이전 출근이 감지되었습니다.<br>휴일조기출근 체크가 누락된 것은 아닌지 확인해 주세요.';
+  const HOL_WRONG_TIP = '휴일조기출근은 휴일에 오전 9시 이전 출근한 경우에만 체크해야 합니다.<br>해당 조건에 맞는지 작성자에게 재확인해 주세요.';
+
+  document.getElementById('tBody').innerHTML=fl.map((r,i)=>{
+    const hol=r.holiday_early, night=r.night_work;
+
+    // 토/일/공휴일 여부 판단
+    const ch = getCustomHolidays();
+    const isHoliday = r.date && (()=>{
+      const dt = new Date(r.date + 'T00:00:00');
+      const dow = dt.getDay();
+      return dow === 0 || dow === 6 || !!HOLIDAYS[r.date] || !!ch[r.date];
+    })();
+
+    // 09:00 이전 출근 여부
+    const isBefore9 = r.start && r.start < '09:00';
+
+    // 휴일조기출근 누락: 휴일 + 09:00 이전 + 체크 안 됨
+    const holMissing = isHoliday && isBefore9 && !hol;
+    // 휴일조기출근 오체크: 체크 됨 + (평일이거나 09:00 이후)
+    const holWrong = hol && (!isHoliday || !isBefore9);
+
+    // 부서 셀 + 이름/사번 불일치 판단
+    const info=getInfo(r.empno);
+    const nameMatch = !masterLoaded || !info || info.name === r.name;
+    const empnoFound = !masterLoaded || !!info;
+    let dept = '-';
+    if (masterLoaded && info) {
+      dept = info.dept || '-';
+      if (!nameMatch) dept = `${dept}<br><span style="font-size:10px;color:var(--red)">명부: ${info.name}</span>`;
+    } else if (masterLoaded && !info) {
+      dept = '<span style="font-size:11px;color:var(--red);font-weight:600">⚠️ 미조회</span>';
+    }
+
+    // 이름 셀: 불일치 시 빨간색 + 툴팁
+    const nameCell = (!nameMatch)
+      ? `<div class="tip-wrap"><span style="font-weight:600;color:var(--red)">${r.name}</span><div class="tip">사원명부의 이름과 일치하지 않습니다.<br>명부: ${info.name}<br>※ 근무일지 수정 후 재업로드 필요</div></div>`
+      : `<span style="font-weight:600">${r.name}</span>`;
+
+    // 사번 셀: 미조회 또는 사번 깨짐 경고
+    const empnoCell = r._empnoBroken
+      ? `<div class="tip-wrap"><span style="font-weight:700;font-family:monospace;color:var(--red)">⚠️ 사번오류</span><div class="tip">HWP 파일에서 사번을 읽지 못했습니다.<br>사원명부를 업로드하면 이름으로 자동 보완됩니다.<br>※ 수동으로 사번을 확인해 주세요.</div></div>`
+      : (masterLoaded && !empnoFound)
+        ? `<div class="tip-wrap"><span style="font-weight:700;font-family:monospace;color:var(--red)">${r.empno}</span><div class="tip">사원명부에서 해당 사번을 찾을 수 없습니다.<br>※ 근무일지 수정 후 재업로드 필요</div></div>`
+        : `<span style="font-weight:700;font-family:monospace">${r.empno}</span>`;
+
+    // 근무유형 (평일/휴일)
+    const workType = isHoliday
+      ? `<span class="tag tr" style="background:var(--red-bg);color:var(--red);border:none">휴일시간외</span>`
+      : `<span class="tag tb" style="border:none">평일시간외</span>`;
+
+    // 휴일조기출근 컬럼 (경고 시 토글 버튼 포함)
+    let holTag;
+    if (hol && holWrong) {
+      holTag = `<div class="tip-wrap">
+        <span class="tag tr" style="border-style:dashed">✓ ⚠️</span>
+        <div class="tip">${HOL_WRONG_TIP}<br><br>
+          <span onclick="togHol(${r._i})" style="display:inline-block;margin-top:2px;padding:3px 10px;background:#F04452;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">체크 해제하기</span>
+        </div>
+      </div>`;
+    } else if (hol) {
+      holTag = `<span style="color:var(--green);font-weight:700;font-size:14px;cursor:pointer" title="클릭하여 체크 해제" onclick="togHol(${r._i})">✓</span>`;
+    } else if (holMissing) {
+      holTag = `<div class="tip-wrap">
+        <span class="tag tag-warn">⚠️</span>
+        <div class="tip">${HOL_MISS_TIP}<br><br>
+          <span onclick="togHol(${r._i})" style="display:inline-block;margin-top:2px;padding:3px 10px;background:#3182F6;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">체크하기</span>
+        </div>
+      </div>`;
+    } else {
+      holTag = `<span style="color:var(--t4);font-size:12px;cursor:pointer" title="클릭하여 체크" onclick="togHol(${r._i})">—</span>`;
+    }
+
+    // 평일야간출근 컬럼
+    const nightTag = night
+      ? `<div class="tip-wrap">
+           <span style="color:var(--green);font-weight:700;font-size:14px;cursor:pointer" title="클릭하여 체크 해제" onclick="togNight(${r._i})">✓</span>
+           <span style="color:#7C3AED;font-size:12px;margin-left:3px">⚠️</span>
+           <div class="tip">${NIGHT_TIP}<br><br>
+             <span onclick="togNight(${r._i})" style="display:inline-block;margin-top:2px;padding:3px 10px;background:#F04452;color:#fff;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">체크 해제하기</span>
+           </div>
+         </div>`
+      : `<span style="color:var(--t4);font-size:12px;cursor:pointer" title="클릭하여 체크" onclick="togNight(${r._i})">—</span>`;
+
+    // 겹침 경고
+    const isOverlap = overlapSet.has(r._i);
+
+    // 분리된 행 표시
+    const splitBadge = r._split
+      ? `<span style="font-size:10px;color:#7C3AED;font-weight:600;margin-left:3px">(${r._splitIdx+1}/${r._splitTotal})</span>`
+      : '';
+
+    return`<tr style="${r._split && r._splitIdx > 0 ? 'background:#FAFAFF' : ''}">
+      <td style="color:var(--t3);font-size:12px">${i+1}</td>
+      <td style="white-space:nowrap">${nameCell}${splitBadge}</td>
+      <td style="font-size:12px;color:var(--t2)">${dept}</td>
+      <td>${empnoCell}</td>
+      <td><span class="ef" style="white-space:nowrap">${r.date}</span></td>
+      <td style="text-align:center">${dayCell(r.date)}</td>
+      <td><span class="ef">${r.start}</span></td>
+      <td><span class="ef">${r.end}</span></td>
+      <td style="font-weight:700;text-align:center">${r.hours}</td>
+      <td>${workType}</td>
+      <td style="text-align:center">${nightTag}</td>
+      <td style="text-align:center">${holTag}</td>
+      <td style="font-size:12px;color:var(--t2)">${r.file}${isOverlap?` <div class="tip-wrap"><span class="tag" style="background:#FFF0F0;color:#F04452;border:1px solid #F04452;font-size:10px;cursor:default">⚠️ 시간겹침</span><div class="tip">같은 날짜에 시간이 겹치는 행이 있습니다.<br>ERP에서 오류가 발생할 수 있습니다.<br>삭제하거나 시간을 수정해 주세요.</div></div>`:''}</td>
+      <td style="text-align:center"><button onclick="deleteRec(${r._i})" style="background:#FEE2E2;border:1px solid #F04452;border-radius:5px;cursor:pointer;color:#C0392B;font-size:14px;padding:2px 6px;font-weight:700" title="이 행 삭제">🗑</button></td>
+    </tr>`;
+  }).join('')||`<tr><td colspan="15" style="text-align:center;padding:24px;color:var(--t3)">해당 항목 없음</td></tr>`;
+}
+render();
+
+// 툴팁: position:fixed로 overflow 클리핑 우회, 위/아래 자동 판단
+document.addEventListener('mouseover', function(e) {
+  const wrap = e.target.closest('.tip-wrap');
+  if (!wrap) return;
+  const tip = wrap.querySelector('.tip');
+  if (!tip) return;
+
+  tip.classList.remove('tip-down');
+  tip.classList.add('tip-show');
+
+  const wR = wrap.getBoundingClientRect();
+  const tR = tip.getBoundingClientRect();
+  const cx = wR.left + wR.width / 2;
+  tip.style.left = cx + 'px';
+
+  if (wR.top - tR.height - 10 < 4) {
+    tip.style.top = (wR.bottom + 6) + 'px';
+    tip.classList.add('tip-down');
+  } else {
+    tip.style.top = (wR.top - tR.height - 6) + 'px';
+  }
+});
+document.addEventListener('mouseout', function(e) {
+  const wrap = e.target.closest('.tip-wrap');
+  if (!wrap || wrap.contains(e.relatedTarget)) return;
+  const tip = wrap.querySelector('.tip');
+  if (tip) tip.classList.remove('tip-show');
+});
