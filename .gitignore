@@ -37,6 +37,9 @@ yarn-error.log*
 시간외근무/
 시간외근무_유연/
 
+# Replit auto-generated (Next.js API routes 사용)
+artifacts/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
