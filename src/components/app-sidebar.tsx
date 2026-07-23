@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LogoutButton } from "@/components/logout-button";
+import { SoosanLogo } from "@/components/soosan-logo";
 import { mainNavItems } from "@/lib/nav";
 import type { SessionUser } from "@/lib/types";
 
@@ -32,9 +33,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
           className="block rounded-lg bg-white px-3 py-2"
           aria-label="대시보드 홈"
         >
-          <span className="text-base font-bold tracking-tight text-[#004b87]">
-            SOOSAN
-          </span>
+          <SoosanLogo className="h-6 w-auto object-contain" />
         </Link>
         <p className="mt-2 text-[11px] text-[#BCC0C8]">시간외근무 ERP</p>
       </div>

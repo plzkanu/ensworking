@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { SoosanLogo } from "@/components/soosan-logo";
 
 export function LoginForm() {
   const router = useRouter();
@@ -55,9 +56,7 @@ export function LoginForm() {
     <div className="flex w-full max-w-md flex-col items-center">
       <div className="mb-8 flex w-full justify-center px-4">
         <div className="rounded-xl bg-white px-8 py-4 shadow-sm">
-          <span className="text-2xl font-bold tracking-tight text-[#004b87]">
-            SOOSAN
-          </span>
+          <SoosanLogo className="h-10 w-auto object-contain" />
         </div>
       </div>
 
