@@ -55,8 +55,8 @@ export function LoginForm() {
   return (
     <div className="flex w-full max-w-md flex-col items-center">
       <div className="mb-8 flex w-full justify-center px-4">
-        <div className="rounded-xl bg-white px-8 py-4 shadow-sm">
-          <SoosanLogo className="h-10 w-auto object-contain" />
+        <div className="flex w-full items-center justify-center rounded-xl bg-white px-8 py-4 shadow-sm">
+          <SoosanLogo className="mx-auto h-10 w-auto max-w-full object-contain object-center" />
         </div>
       </div>
 
@@ -70,7 +70,11 @@ export function LoginForm() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-5"
+          autoComplete="off"
+        >
           <div>
             <label
               htmlFor="userId"
@@ -80,9 +84,12 @@ export function LoginForm() {
             </label>
             <input
               id="userId"
+              name="ens-login-id"
               type="text"
-              autoComplete="username"
+              autoComplete="off"
+              readOnly
               value={userId}
+              onFocus={(event) => event.currentTarget.removeAttribute("readOnly")}
               onChange={(event) => setUserId(event.target.value)}
               placeholder="아이디를 입력하세요"
               className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"
@@ -98,9 +105,12 @@ export function LoginForm() {
             </label>
             <input
               id="password"
+              name="ens-login-password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
+              readOnly
               value={password}
+              onFocus={(event) => event.currentTarget.removeAttribute("readOnly")}
               onChange={(event) => setPassword(event.target.value)}
               placeholder="비밀번호를 입력하세요"
               className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"

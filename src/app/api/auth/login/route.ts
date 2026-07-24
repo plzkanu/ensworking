@@ -27,21 +27,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const response = NextResponse.json({
-      user: {
-        id: user.id,
-        name: user.name,
-        department: user.department ?? "",
-        role: user.role,
-      },
-    });
-
-    return attachSessionCookie(response, {
+    const sessionUser = {
       id: user.id,
       name: user.name,
+      employeeNumber: user.employeeNumber,
+      position: user.position,
       department: user.department ?? "",
       role: user.role,
-    });
+    };
+
+    const response = NextResponse.json({ user: sessionUser });
+
+    return attachSessionCookie(response, sessionUser);
   } catch (error) {
     const message =
       error instanceof Error

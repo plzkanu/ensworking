@@ -17,8 +17,9 @@ export function formatSupabaseNetworkError(message: string): string {
     normalized.includes("timeout")
   ) {
     return (
-      "Supabase에 연결할 수 없습니다. 회사 VPN/방화벽 환경이면 .env.local에 " +
-      "SUPABASE_SSL_VERIFY=0을 추가한 뒤 개발 서버를 재시작하세요."
+      "Supabase에 연결할 수 없습니다. Replit 배포 Secrets 또는 .env.local에 " +
+      "NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY를 확인하세요. " +
+      "VPN/방화벽 TLS 오류면 SUPABASE_SSL_VERIFY=0을 추가한 뒤 재배포하세요."
     );
   }
   return message;

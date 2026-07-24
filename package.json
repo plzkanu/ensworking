@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "node scripts/start-production.mjs",
+    "dev": "next dev --hostname 0.0.0.0",
+    "prebuild": "node scripts/prebuild.mjs",
+    "build": "next build --webpack",
+    "start": "next start --hostname 0.0.0.0",
     "lint": "eslint",
     "extract-html": "node scripts/extract-html.mjs"
   },

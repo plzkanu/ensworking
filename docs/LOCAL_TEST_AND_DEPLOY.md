@@ -182,6 +182,9 @@ npm run start
 
 ### 6-3. Replit Secrets (필수)
 
+> **중요**: Replit **에디터 Secrets**와 **Publishing(배포) Secrets**는 별도입니다.  
+> Preview(개발)에서는 되는데 배포 URL(`*.replit.app`)에서 500이 나면 Publishing Secrets를 확인하세요.
+
 | Secret | 설명 |
 |--------|------|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase Project URL |
@@ -298,6 +301,46 @@ cp "시간외근무_유연근무.html" public/overtime/flexible/index.html
 
 **정상 동작**입니다. 미들웨어(`src/middleware.ts`)가 `/overtime/` 경로에 인증을 요구합니다. 먼저 `/login`에서 로그인하세요.
 
+### Replit 배포 후 Internal Server Error (500)
+
+**증상**: 배포 URL(`*.replit.app`) 접속 시 모든 페이지에서 `Internal Server Error`
+
+**원인 (흔한 순서)**:
+1. Replit **Publishing(배포) Secrets** 미등록 — 에디터 Secrets와 배포 Secrets는 **별도**입니다
+2. Replit이 자동 생성한 `artifacts/` 폴더가 Next.js 빌드/실행과 충돌
+3. Turbopack 프로덕션 빌드 산출물이 Replit Cloud Run에서 불안정
+
+**해결**:
+
+1. Replit → **Publishing(Deploy)** → **Secrets** 탭에서 아래 3개 등록:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `AUTH_SECRET`
+
+2. Replit Shell에서 클린 빌드:
+
+```bash
+rm -rf artifacts .next node_modules
+npm install
+npm run build
+```
+
+3. **Deploy → Republish**
+
+4. 배포 후 헬스체크 확인:
+
+```
+https://<your-app>.replit.app/api/health
+```
+
+정상 응답 예:
+
+```json
+{"ok":true,"nodeEnv":"production","supabaseConfigured":true,"authSecretConfigured":true}
+```
+
+`supabaseConfigured` 또는 `authSecretConfigured`가 `false`이면 Publishing Secrets를 다시 확인하세요.
+
 ### Replit 배포 후 502 / 앱 미기동
 
 **해결**:
@@ -321,8 +364,8 @@ npm run build
 | 명령 | 용도 |
 |------|------|
 | `npm run dev` | 로컬 개발 서버 (hot reload) |
-| `npm run build` | 프로덕션 빌드 |
-| `npm run start` | 프로덕션 서버 실행 |
+| `npm run build` | 프로덕션 빌드 (Replit용 webpack) |
+| `npm run start` | 프로덕션 서버 실행 (`0.0.0.0`, `PORT` 자동) |
 | `npm run lint` | ESLint 검사 |
 | `npm run extract-html` | HTML → legacy CSS/JS 추출 |
 
@@ -334,7 +377,8 @@ npm run build
 |------|------|
 | `.env.local.example` | 환경 변수 템플릿 |
 | `.replit` | Replit 실행·배포 설정 |
-| `scripts/start-production.mjs` | 프로덕션 서버 시작 (PORT, 0.0.0.0) |
+| `scripts/prebuild.mjs` | Replit `artifacts/` 폴더 제거 |
+| `scripts/start-production.mjs` | (구버전) PORT + 0.0.0.0 바인딩 — `npm start`가 `next start` 직접 사용 |
 | `scripts/extract-html.mjs` | HTML 도구 분리 스크립트 |
 | `supabase/migrations/001_ens_users.sql` | 사용자 테이블 DDL |
 | `src/middleware.ts` | `/overtime/*` 인증 미들웨어 |

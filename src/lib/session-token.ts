@@ -93,6 +93,8 @@ export async function parseSessionToken(
     const parsed = JSON.parse(decodeBase64Url(payload)) as SessionUser;
     return {
       ...parsed,
+      employeeNumber: parsed.employeeNumber ?? "",
+      position: parsed.position ?? "",
       department: parsed.department ?? "",
     };
   } catch {

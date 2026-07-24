@@ -17,4 +17,16 @@ export const mainNavItems: NavItem[] = [
     label: "시간외근무 (유연)",
     icon: "🔄",
   },
+  {
+    href: "/dashboard/admin/users",
+    label: "사용자 관리",
+    icon: "👥",
+    adminOnly: true,
+  },
+  {
+    href: "/dashboard/admin/roles",
+    label: "역할 관리",
+    icon: "🛡️",
+    adminOnly: true,
+  },
 ];

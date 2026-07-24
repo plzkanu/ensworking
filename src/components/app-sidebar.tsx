@@ -27,15 +27,15 @@ export function AppSidebar({ user }: AppSidebarProps) {
 
   return (
     <aside className="fixed top-0 left-0 z-[100] flex h-screen w-[220px] flex-col bg-[#0F2645]">
-      <div className="border-b border-white/8 px-[18px] pt-5 pb-4">
+      <div className="border-b border-white/8 px-4 pt-5 pb-4">
         <Link
           href="/dashboard"
-          className="block rounded-lg bg-white px-3 py-2"
+          className="flex w-full items-center justify-center rounded-lg bg-white px-3 py-3"
           aria-label="대시보드 홈"
         >
-          <SoosanLogo className="h-6 w-auto object-contain" />
+          <SoosanLogo variant="sidebar" height={26} />
         </Link>
-        <p className="mt-2 text-[11px] text-[#BCC0C8]">시간외근무 ERP</p>
+        <p className="mt-2 text-center text-[11px] text-[#BCC0C8]">시간외근무 ERP</p>
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3">
