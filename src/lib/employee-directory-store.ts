@@ -1,6 +1,11 @@
 import { createServerClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { formatSupabaseNetworkError } from "@/lib/supabase/fetch";
+import {
+  formatDateYmd,
+  getPreviousMonthFirstDay,
+  isEmployeeIncludedForPreviousMonth,
+} from "@/lib/employee-directory-filter";
 import type { EmployeeDirectoryEntry } from "./types";
 
 interface EmployeeDirectoryRow {
@@ -25,14 +30,16 @@ function mapRow(row: EmployeeDirectoryRow): EmployeeDirectoryEntry {
   };
 }
 
-export async function listEmployeeDirectory(): Promise<{
+export async function listEmployeeDirectory(reference = new Date()): Promise<{
   employees: EmployeeDirectoryEntry[];
   syncedAt: string | null;
+  filterBasisDate: string;
 }> {
   if (!isSupabaseConfigured()) {
     throw new Error("Supabase가 설정되지 않았습니다.");
   }
 
+  const filterBasisDate = formatDateYmd(getPreviousMonthFirstDay(reference));
   const supabase = createServerClient();
   const { data, error } = await supabase
     .from("employee_directory")
@@ -46,7 +53,11 @@ export async function listEmployeeDirectory(): Promise<{
     throw new Error(formatSupabaseNetworkError(error.message));
   }
 
-  const employees = (data ?? []).map(mapRow);
+  const employees = (data ?? [])
+    .map(mapRow)
+    .filter((entry) =>
+      isEmployeeIncludedForPreviousMonth(entry.retireDate, reference),
+    );
   const syncedAt = employees.reduce<string | null>((latest, entry) => {
     if (!entry.syncedAt) {
       return latest;
@@ -57,5 +68,5 @@ export async function listEmployeeDirectory(): Promise<{
     return latest;
   }, null);
 
-  return { employees, syncedAt };
+  return { employees, syncedAt, filterBasisDate };
 }

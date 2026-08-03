@@ -2336,7 +2336,57 @@ function downloadERPExcel() {
   document.getElementById('warnModal').style.display = 'flex';
 }
 
-function doDownloadERPExcel() {
+const ERP_OVERTIME_TYPE = 'regular';
+
+function serializeErpPersonBlock(block) {
+  return {
+    name: block.name,
+    empno: block.empno,
+    dept: block.dept,
+    workType: block.workType,
+    slots: block.slots.map(function(slot) {
+      const out = {};
+      for (const date of Object.keys(slot)) {
+        const rec = slot[date];
+        out[date] = {
+          start: rec.start || '',
+          end: rec.end || '',
+          hours: rec.hours || 0,
+          night_work: !!rec.night_work,
+          holiday_early: !!rec.holiday_early,
+        };
+      }
+      return out;
+    }),
+  };
+}
+
+function serializeErpPayload(yr, mo, dates, personBlocks) {
+  return {
+    overtimeType: ERP_OVERTIME_TYPE,
+    year: yr,
+    month: mo,
+    yearMonth: yr + '-' + String(mo).padStart(2, '0'),
+    dates: dates,
+    personBlocks: personBlocks.map(serializeErpPersonBlock),
+    recordCount: RECORDS.length,
+    personCount: personBlocks.length,
+  };
+}
+
+async function saveErpSubmissionToDb(payload) {
+  const res = await fetch('/api/overtime/erp-submissions', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(function() { return {}; });
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+async function doDownloadERPExcel() {
   closeWarnModal();
   // ── 연월 결정 (파싱 데이터 있으면 첫 레코드 기준, 없으면 현재 월) ──
   let yr, mo;
@@ -2389,164 +2439,18 @@ function doDownloadERPExcel() {
     personBlocks.push({name:p.name, empno:p.empno, dept:p.dept, workType:p.workType, maxSlots, slots});
   }
 
-  // ── 열 매핑 ────────────────────────────────────────────────────
-  // A(0)=성명 B(1)=사번 C(2)=소속부서 D(3)=근무유형
-  // E~: day1[시작|종료|시간수|평일야간|휴일조기] day2[...] ...
-  const FIXED = 4;
-  const COLS_PER_DAY = 5;
-  const totalCols = FIXED + daysInMonth * COLS_PER_DAY;
-  const colIdx = (dayIdx, sub) => FIXED + dayIdx * COLS_PER_DAY + sub;
-  const encCell = (r, c) => XLSX.utils.encode_cell({r, c});
+  if (!personBlocks.length) {
+    alert('저장할 데이터가 없습니다.');
+    return;
+  }
 
-  // ── 스타일 상수 ────────────────────────────────────────────────
-  const borderGray = {
-    top:   {style:'thin', color:{rgb:'AAAAAA'}},
-    bottom:{style:'thin', color:{rgb:'AAAAAA'}},
-    left:  {style:'thin', color:{rgb:'AAAAAA'}},
-    right: {style:'thin', color:{rgb:'AAAAAA'}},
-  };
-  const sTitle = { // Row 0: 타이틀
-    font:      {name:'맑은 고딕', sz:20, bold:true, color:{rgb:'000000'}},
-    alignment: {horizontal:'left', vertical:'center'},
-  };
-  const sHdrGreen = { // Row 1~2: 헤더
-    font:      {name:'맑은 고딕', sz:10, bold:true, color:{rgb:'000000'}},
-    fill:      {fgColor:{rgb:'DAEEF3'}, patternType:'solid'},
-    border:    borderGray,
-    alignment: {horizontal:'center', vertical:'center', wrapText:true},
-  };
-  const sData = { // 일반 데이터 셀
-    font:      {name:'맑은 고딕', sz:10},
-    border:    borderGray,
-    alignment: {vertical:'center'},
-  };
-  const sHours = { // 시간수 셀 (숫자, #,##0.0)
-    font:      {name:'맑은 고딕', sz:10},
-    numFmt:    '#,##0.0',
-    border:    borderGray,
-    alignment: {horizontal:'right', vertical:'center'},
-  };
-  const sCheck = { // 0/1 셀 (평일야간, 휴일조기)
-    font:      {name:'맑은 고딕', sz:10},
-    border:    borderGray,
-    alignment: {horizontal:'center', vertical:'center'},
-  };
-
-  // ── 워크시트 빌드 ──────────────────────────────────────────────
-  const ws = {};
-  const setCell = (r, c, v, s, t) => {
-    const a = encCell(r, c);
-    const cell = {v, s};
-    if (t) cell.t = t;
-    else if (typeof v === 'number') cell.t = 'n';
-    else cell.t = 's';
-    ws[a] = cell;
-  };
-
-  const R_TITLE = 0, R_DATE = 1, R_HDR = 2, R_DATA = 3;
-
-  // Row 0: 타이틀
-  setCell(R_TITLE, 0, `시간외근무신청(ERP)`, sTitle);
-  for (let c = 1; c < totalCols; c++) setCell(R_TITLE, c, '', sTitle);
-
-  // Row 1: 날짜 헤더 + "기본정보"
-  setCell(R_DATE, 0, '기본정보', sHdrGreen);
-  for (let c = 1; c < FIXED; c++) setCell(R_DATE, c, '', sHdrGreen);
-  dates.forEach((date, di) => {
-    const dt = new Date(date + 'T00:00:00');
-    const ch = getCustomHolidays();
-    const dow = dt.getDay();
-    const hName = HOLIDAYS[date] || ch[date];
-    const label = `${mo}/${di+1} (${DAY_KR[dow]})${hName ? '\n'+hName : ''}`;
-    setCell(R_DATE, colIdx(di, 0), label, sHdrGreen);
-    for (let s = 1; s < COLS_PER_DAY; s++) setCell(R_DATE, colIdx(di, s), '', sHdrGreen);
-  });
-
-  // Row 2: 서브 헤더
-  ['성명','사번','소속부서','근무유형'].forEach((h, c) => setCell(R_HDR, c, h, sHdrGreen));
-  const subHdrs = ['시작시간','종료시간','시간수','평일야간출근','휴일조기출근'];
-  dates.forEach((_,di) => subHdrs.forEach((h, s) => setCell(R_HDR, colIdx(di,s), h, sHdrGreen)));
-
-  // Row 3+: 데이터 (사람별 블록, A~D 세로 병합)
-  const merges = [
-    {s:{r:R_TITLE,c:0}, e:{r:R_TITLE,c:totalCols-1}},
-    {s:{r:R_DATE, c:0}, e:{r:R_DATE, c:FIXED-1}},
-  ];
-  dates.forEach((_,di) => merges.push({
-    s:{r:R_DATE, c:colIdx(di,0)},
-    e:{r:R_DATE, c:colIdx(di,COLS_PER_DAY-1)},
-  }));
-
-  let curR = R_DATA;
-  personBlocks.forEach(block => {
-    const rStart = curR;
-    const rEnd   = curR + block.maxSlots - 1;
-
-    // A~D: 모든 행에 값 반복 (병합 없음)
-    for (let ri = rStart; ri <= rEnd; ri++) {
-      setCell(ri, 0, block.name,     sData);
-      setCell(ri, 1, block.empno,    sData);
-      setCell(ri, 2, block.dept,     sData);
-      setCell(ri, 3, block.workType, sData);
-    }
-
-    // 날짜 컬럼: 슬롯별로 행 채움
-    block.slots.forEach((entries, si) => {
-      const r = rStart + si;
-      dates.forEach((date, di) => {
-        const rec = entries[date];
-        if (rec) {
-          setCell(r, colIdx(di,0), rec.start || '', sData);
-          setCell(r, colIdx(di,1), rec.end   || '', sData);
-          setCell(r, colIdx(di,2), rec.hours || 0,  sHours);
-          setCell(r, colIdx(di,3), rec.night_work    ? 1 : 0, sCheck);
-          setCell(r, colIdx(di,4), rec.holiday_early ? 1 : 0, sCheck);
-        } else {
-          setCell(r, colIdx(di,0), '', sData);
-          setCell(r, colIdx(di,1), '', sData);
-          setCell(r, colIdx(di,2), '', sData);
-          setCell(r, colIdx(di,3), '', sData);
-          setCell(r, colIdx(di,4), '', sData);
-        }
-      });
-    });
-
-    curR += block.maxSlots;
-  });
-
-  ws['!merges'] = merges;
-
-  // ── 열 너비 / 행 높이 ─────────────────────────────────────────
-  ws['!cols'] = [
-    {wch:10}, // 성명
-    {wch:9},  // 사번
-    {wch:22}, // 소속부서
-    {wch:10}, // 근무유형
-    ...Array.from({length: daysInMonth * COLS_PER_DAY}, (_,i) => {
-      const sub = i % COLS_PER_DAY;
-      return {wch: sub === 2 ? 7 : sub >= 3 ? 9 : 8}; // 시간수7 평일야간/휴일조기9 시작/종료8
-    }),
-  ];
-  ws['!rows'] = [
-    {hpt:38}, // 타이틀
-    {hpt:30}, // 날짜
-    {hpt:30}, // 헤더
-    ...Array.from({length: curR - R_DATA}, ()=>({hpt:20})),
-  ];
-
-  // ── ref 설정 ──────────────────────────────────────────────────
-  ws['!ref'] = XLSX.utils.encode_range({
-    s:{r:0,c:0},
-    e:{r: curR - 1, c: totalCols - 1},
-  });
-
-  // ── 워크북 저장 ───────────────────────────────────────────────
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '시간외근무신청');
-
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
-  XLSX.writeFile(wb, `시간외근무신청(ERP)_${stamp}.xlsx`, {bookType:'xlsx', type:'binary', cellStyles:true});
+  const payload = serializeErpPayload(yr, mo, dates, personBlocks);
+  try {
+    await saveErpSubmissionToDb(payload);
+    alert('ERP 양식이 저장되었습니다.');
+  } catch (e) {
+    alert('ERP 양식 저장 실패: ' + e.message);
+  }
 }
 
 function getOverlapSet() {

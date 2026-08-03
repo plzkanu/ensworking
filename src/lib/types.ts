@@ -74,6 +74,72 @@ export interface ActivityLogEntry {
   createdAt: string;
 }
 
+export type OvertimeType = "regular" | "flexible";
+
+export interface ErpSubmissionDayEntry {
+  start: string;
+  end: string;
+  hours: number;
+  night_work: boolean;
+  holiday_early: boolean;
+  converted?: boolean;
+}
+
+export interface ErpSubmissionPersonBlock {
+  name: string;
+  empno: string;
+  dept: string;
+  workType: string;
+  slots: Array<Record<string, ErpSubmissionDayEntry>>;
+}
+
+export interface ErpSubmissionPayload {
+  year: number;
+  month: number;
+  yearMonth: string;
+  dates: string[];
+  personBlocks: ErpSubmissionPersonBlock[];
+}
+
+export interface ErpSubmission {
+  id: string;
+  overtimeType: OvertimeType;
+  userId: string;
+  userName: string;
+  yearMonth: string;
+  recordCount: number;
+  personCount: number;
+  payload: ErpSubmissionPayload;
+  createdAt: string;
+}
+
+export interface OvertimeRegistrationWindow {
+  overtimeType: OvertimeType;
+  startsAt: string;
+  endsAt: string;
+  enabled: boolean;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+export interface OvertimeWindowStatus {
+  overtimeType: OvertimeType;
+  label: string;
+  configured: boolean;
+  enabled: boolean;
+  open: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  message: string;
+}
+
+export {
+  formatOvertimeWindowRange,
+  formatOvertimeWindowRangeForDisplay,
+  fromDatetimeLocalValue,
+  toDatetimeLocalValue,
+} from "./overtime-window-utils";
+
 export function toUserPublic(user: User): UserPublic {
   return {
     id: user.id,

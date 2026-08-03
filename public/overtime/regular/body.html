@@ -39,8 +39,8 @@
       <div style="display:flex;align-items:flex-start;gap:10px;flex:1;min-width:180px">
         <div style="background:#C0392B;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;margin-top:1px">5</div>
         <div>
-          <div style="font-size:12px;font-weight:700;color:var(--t1)">ERP 양식 다운로드</div>
-          <div style="font-size:11px;color:var(--t3);margin-top:2px;line-height:1.5">ERP 양식 다운로드를 합니다</div>
+          <div style="font-size:12px;font-weight:700;color:var(--t1)">ERP 양식 저장</div>
+          <div style="font-size:11px;color:var(--t3);margin-top:2px;line-height:1.5">ERP 양식 데이터를 시스템에 저장합니다</div>
         </div>
       </div>
     </div>
@@ -113,7 +113,7 @@
         <span id="warnProgress" style="font-size:12px;color:var(--t3)"></span>
         <div style="display:flex;gap:8px">
           <button onclick="closeWarnModal()" style="padding:8px 16px;font-size:13px;background:transparent;border:1px solid var(--line);border-radius:8px;color:var(--t2);cursor:pointer">취소</button>
-          <button id="warnDlBtn" onclick="doDownloadERPExcel()" disabled style="padding:9px 20px;font-size:13px;font-weight:700;background:#C0392B;color:#fff;border:none;border-radius:8px;cursor:pointer;opacity:0.4">⬇ ERP 양식 다운로드</button>
+          <button id="warnDlBtn" onclick="doDownloadERPExcel()" disabled style="padding:9px 20px;font-size:13px;font-weight:700;background:#C0392B;color:#fff;border:none;border-radius:8px;cursor:pointer;opacity:0.4">💾 ERP 양식 저장</button>
         </div>
       </div>
     </div>
@@ -177,9 +177,9 @@
       <span>📋 시간외근무 입력 목록 &nbsp;<span class="tag tb" id="lBadge">0건</span></span>
       <div style="display:flex;gap:8px">
         <button class="btn bs" onclick="clearRecords()">🗑 목록 삭제</button>
-        <button class="btn" style="background:#00C471;color:#fff" onclick="downloadExcel()">⬇ 목록 다운로드 (Excel)</button>
+        <button class="btn" style="display:none;background:#00C471;color:#fff" onclick="downloadExcel()">⬇ 목록 다운로드 (Excel)</button>
         <button class="btn" style="background:#005C8A;color:#fff" onclick="makeFixedHwp(event)">⬇ 근무일지 수정본 다운로드 (HWP)</button>
-        <button class="btn" style="background:#C0392B;color:#fff" onclick="downloadERPExcel()">⬇ ERP 양식 다운로드</button>
+        <button class="btn" style="background:#C0392B;color:#fff" onclick="downloadERPExcel()">💾 ERP 양식 저장</button>
       </div>
     </div>
     <div class="fb">
