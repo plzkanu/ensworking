@@ -8,7 +8,7 @@ export default function RegularOvertimePage() {
           시간외근무 (일반근무)
         </h1>
         <p className="mt-2 text-sm text-slate-600">
-          사원명부 업로드 → HWP 근무일지 파싱 → 오류 검토 → ERP 양식 다운로드
+          사원명부(DB) 자동 연동 → HWP 근무일지 파싱 → 오류 검토 → ERP 양식 다운로드
         </p>
       </div>
       <OvertimeToolFrame variant="regular" />

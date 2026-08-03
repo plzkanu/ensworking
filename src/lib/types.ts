@@ -70,3 +70,14 @@ export function toSessionUser(user: User): SessionUser {
     role: user.role,
   };
 }
+
+/** ERP 사원명부 (employee_directory) */
+export interface EmployeeDirectoryEntry {
+  empId: string;
+  name: string;
+  dept: string;
+  position: string;
+  empType: string;
+  retireDate: string;
+  syncedAt: string | null;
+}

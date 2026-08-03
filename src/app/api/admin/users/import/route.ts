@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
     const buffer = await file.arrayBuffer();
     const roles = await listRoles(true);
-    const { rows, errors: parseErrors } = parseUserExcelBuffer(buffer, roles);
+    const { rows, errors: parseErrors } = await parseUserExcelBuffer(buffer, roles);
 
     if (rows.length === 0 && parseErrors.length > 0) {
       return NextResponse.json(

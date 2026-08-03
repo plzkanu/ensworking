@@ -8,7 +8,7 @@ export default function FlexibleOvertimePage() {
           시간외근무 (유연근무)
         </h1>
         <p className="mt-2 text-sm text-slate-600">
-          유연근무 대상자의 시간외근무일지 파싱 및 ERP 시간대 변환을 지원합니다.
+          유연근무 대상자의 시간외근무일지 파싱 및 ERP 시간대 변환 (사원명부 DB 자동 연동)
         </p>
       </div>
       <OvertimeToolFrame variant="flexible" />

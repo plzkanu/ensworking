@@ -9,7 +9,7 @@ export async function GET() {
 
   try {
     const roles = await listRoles(true);
-    const buffer = buildUserTemplateBuffer(roles);
+    const buffer = await buildUserTemplateBuffer(roles);
 
     return new NextResponse(new Uint8Array(buffer), {
       headers: {

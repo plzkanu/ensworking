@@ -1,5 +1,15 @@
-import XLSX from "xlsx-js-style";
 import type { Role } from "./types";
+
+type XlsxModule = typeof import("xlsx-js-style");
+
+let xlsxModulePromise: Promise<XlsxModule> | null = null;
+
+async function loadXlsx(): Promise<XlsxModule> {
+  if (!xlsxModulePromise) {
+    xlsxModulePromise = import("xlsx-js-style");
+  }
+  return xlsxModulePromise;
+}
 
 export const USER_EXCEL_HEADERS = [
   "아이디",
@@ -89,7 +99,8 @@ function isRowEmpty(values: unknown[]): boolean {
   return values.every((value) => String(value ?? "").trim() === "");
 }
 
-export function buildUserTemplateBuffer(roles: Role[]): Buffer {
+export async function buildUserTemplateBuffer(roles: Role[]): Promise<Buffer> {
+  const XLSX = await loadXlsx();
   const exampleRow = [
     "hong.gildong",
     "초기비밀번호",
@@ -142,10 +153,11 @@ export function buildUserTemplateBuffer(roles: Role[]): Buffer {
   return output;
 }
 
-export function parseUserExcelBuffer(
+export async function parseUserExcelBuffer(
   buffer: ArrayBuffer,
   roles: Role[],
-): { rows: ParsedUserExcelRow[]; errors: UserExcelParseError[] } {
+): Promise<{ rows: ParsedUserExcelRow[]; errors: UserExcelParseError[] }> {
+  const XLSX = await loadXlsx();
   const workbook = XLSX.read(buffer, { type: "array" });
   const sheetName =
     workbook.SheetNames.find((name) => name === "사용자") ??

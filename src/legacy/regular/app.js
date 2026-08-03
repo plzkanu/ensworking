@@ -491,21 +491,6 @@ let hwpFiles = [], RECORDS = [], deletedRecords = [], ERR_ROWS = [];
 
 function dg(e, on) { e.preventDefault(); document.getElementById('dz').classList.toggle('drag', !!on); }
 function dp(e) { e.preventDefault(); dg(e,0); addF(e.dataTransfer.files); }
-function mDrag(e, on) {
-  e.preventDefault();
-  const dz = document.getElementById('mDz');
-  dz.style.borderColor = on ? 'var(--blue)' : 'var(--line)';
-  dz.style.background  = on ? 'var(--blue-bg)' : 'var(--bg)';
-}
-function mDrop(e) {
-  e.preventDefault();
-  mDrag(e, 0);
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  const ext = f.name.split('.').pop().toLowerCase();
-  if (ext !== 'xlsx' && ext !== 'xls') { alert('엑셀 파일(.xlsx, .xls)만 업로드 가능합니다.'); return; }
-  loadMaster({ files: [f] });
-}
 
 function addF(list) {
   if (!list || list.length === 0) return;
@@ -555,7 +540,8 @@ function clearAll() {
   renderFL(); updateParseButtons();
 }
 function updateParseButtons() {
-  document.getElementById('pBtn').disabled = !hwpFiles.length;
+  const canParse = masterLoaded && hwpFiles.length > 0;
+  document.getElementById('pBtn').disabled = !canParse;
   document.getElementById('clrBtn').disabled = !hwpFiles.length;
 }
 function renderFL() {
@@ -1447,6 +1433,10 @@ function copyErrContent(ev, btn) {
 }
 
 async function parseAll() {
+  if (!masterLoaded) {
+    alert('사원명부(DB)가 연결되지 않았습니다.\n🔄 새로고침으로 다시 불러온 뒤 파싱해 주세요.');
+    return;
+  }
   if (!hwpFiles.length) return;
   document.getElementById('ldg').classList.add('on');
   document.getElementById('pBtn').disabled = true;
@@ -1604,55 +1594,54 @@ async function parseAll() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   사원명부
+   사원명부 (DB)
 ══════════════════════════════════════════════════════════════════ */
 let masterMap = {}, masterByName = {}, masterLoaded = false;
 
-function loadMaster(input) {
-  const f = input.files[0]; if (!f) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
-    masterMap = {}; masterByName = {};
-    const NAME_KEYS  = ['사원','이름','성명','사원명','직원명','성 명'];
-    const EMPNO_KEYS = ['사번','사원번호','직원번호','사원 번호','번호'];
-    const DEPT_KEYS  = ['부서','소속','부서명','팀명','소속부서'];
-    for (const sn of wb.SheetNames) {
-      const data = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:''});
-      let hr = -1;
-      for (let i = 0; i < Math.min(data.length,10); i++) {
-        const r = data[i].map(c=>String(c).trim());
-        if (r.some(c=>NAME_KEYS.includes(c)) || r.some(c=>EMPNO_KEYS.includes(c))) { hr=i; break; }
-      }
-      if (hr < 0) continue;
-      const hdr = data[hr].map(c=>String(c).trim());
-      const cm = {};
-      hdr.forEach((h,i) => {
-        if (NAME_KEYS.includes(h)  && cm.name  === undefined) cm.name  = i;
-        if (EMPNO_KEYS.includes(h) && cm.empNo === undefined) cm.empNo = i;
-        if (DEPT_KEYS.includes(h)  && cm.dept  === undefined) cm.dept  = i;
-      });
-      if (cm.name === undefined) continue;
-      for (let i=hr+1; i<data.length; i++) {
-        const row=data[i];
-        const name=String(row[cm.name]??'').trim();
-        if (!name || name==='선택') continue;
-        const raw2 = cm.empNo !== undefined ? String(row[cm.empNo]??'').trim() : '';
-        const norm = raw2.replace(/^0+/,'');
-        const dept = cm.dept !== undefined ? String(row[cm.dept]??'').trim() : '';
-        const obj  = {name, dept};
-        if (raw2)  masterMap[raw2] = obj;
-        if (norm && norm !== raw2) masterMap[norm] = obj;
-        if (!masterByName[name]) masterByName[name] = [];
-        if (!masterByName[name].some(x => x.empno === raw2)) masterByName[name].push({ empno: raw2, dept });
-      }
-      break;
+function applyMasterRows(rows) {
+  masterMap = {}; masterByName = {};
+  for (const row of rows) {
+    const name = String(row.name ?? '').trim();
+    if (!name) continue;
+    const raw2 = String(row.empId ?? '').trim();
+    const norm = raw2.replace(/^0+/, '');
+    const dept = String(row.dept ?? '').trim();
+    const obj = { name, dept };
+    if (raw2) masterMap[raw2] = obj;
+    if (norm && norm !== raw2) masterMap[norm] = obj;
+    if (!masterByName[name]) masterByName[name] = [];
+    if (!masterByName[name].some(x => x.empno === raw2)) masterByName[name].push({ empno: raw2, dept });
+  }
+}
+
+async function loadMasterFromDb() {
+  const statusEl = document.getElementById('mStatus');
+  if (!statusEl) return;
+  statusEl.textContent = '⏳ 사원명부 불러오는 중…';
+  try {
+    const res = await fetch('/api/employee-directory', { credentials: 'same-origin' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
     }
-    masterLoaded=true;
-    document.getElementById('mStatus').textContent=`📋 ${f.name.replace(/\.xlsx?$/i,'')}`;
-    updateBadge(); render();
-  };
-  reader.readAsArrayBuffer(f);
+    const data = await res.json();
+    const employees = data.employees || [];
+    if (employees.length === 0) {
+      throw new Error('사원명부 데이터가 없습니다. ERP 동기화를 확인하세요.');
+    }
+    applyMasterRows(employees);
+    masterLoaded = true;
+    const synced = data.syncedAt
+      ? new Date(data.syncedAt).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' })
+      : '';
+    statusEl.textContent = `📋 DB 사원명부 ${data.count}명${synced ? ` · 동기화 ${synced}` : ''}`;
+    updateBadge();
+    render();
+  } catch (e) {
+    masterLoaded = false;
+    statusEl.textContent = `⚠️ 사원명부 로드 실패: ${e.message}`;
+  }
+  updateParseButtons();
 }
 
 function updateBadge() {
@@ -2659,7 +2648,7 @@ function render(){
 
     // 사번 셀: 미조회 또는 사번 깨짐 경고
     const empnoCell = r._empnoBroken
-      ? `<div class="tip-wrap"><span style="font-weight:700;font-family:monospace;color:var(--red)">⚠️ 사번오류</span><div class="tip">HWP 파일에서 사번을 읽지 못했습니다.<br>사원명부를 업로드하면 이름으로 자동 보완됩니다.<br>※ 수동으로 사번을 확인해 주세요.</div></div>`
+      ? `<div class="tip-wrap"><span style="font-weight:700;font-family:monospace;color:var(--red)">⚠️ 사번오류</span><div class="tip">HWP 파일에서 사번을 읽지 못했습니다.<br>DB 사원명부에서 이름으로 자동 보완됩니다.<br>※ 수동으로 사번을 확인해 주세요.</div></div>`
       : (masterLoaded && !empnoFound)
         ? `<div class="tip-wrap"><span style="font-weight:700;font-family:monospace;color:var(--red)">${r.empno}</span><div class="tip">사원명부에서 해당 사번을 찾을 수 없습니다.<br>※ 근무일지 수정 후 재업로드 필요</div></div>`
         : `<span style="font-weight:700;font-family:monospace">${r.empno}</span>`;
@@ -2728,6 +2717,7 @@ function render(){
     </tr>`;
   }).join('')||`<tr><td colspan="15" style="text-align:center;padding:24px;color:var(--t3)">해당 항목 없음</td></tr>`;
 }
+loadMasterFromDb();
 render();
 
 // 툴팁: position:fixed로 overflow 클리핑 우회, 위/아래 자동 판단
