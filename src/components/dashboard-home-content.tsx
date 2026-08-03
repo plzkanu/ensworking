@@ -85,6 +85,20 @@ function OvertimeCard({ status }: { status: OvertimeWindowStatus }) {
   return <div className={cardClassName}>{content}</div>;
 }
 
+function ErpSubmissionsCard() {
+  return (
+    <Link
+      href="/dashboard/overtime/submissions"
+      className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition hover:border-[#009ada]/40 hover:shadow-md"
+    >
+      <h2 className="font-semibold text-[#004b87]">📋 ERP 제출 내역</h2>
+      <p className="mt-2 text-sm text-slate-500">
+        저장한 ERP 양식 데이터를 유형·연월 기준으로 조회합니다.
+      </p>
+    </Link>
+  );
+}
+
 export async function DashboardHomeContent({
   noticeMessage,
 }: {
@@ -107,22 +121,14 @@ export async function DashboardHomeContent({
         </div>
       ) : null}
 
-      <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Link
-          href="/dashboard/overtime/submissions"
-          className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition hover:border-[#009ada]/40 hover:shadow-md"
-        >
-          <h2 className="font-semibold text-[#004b87]">📋 ERP 제출 내역</h2>
-          <p className="mt-2 text-sm text-slate-500">
-            저장한 ERP 양식 데이터를 유형·연월 기준으로 조회합니다.
-          </p>
-        </Link>
-      </div>
-
       <div className="grid gap-4 sm:grid-cols-2">
         {windows.map((status) => (
           <OvertimeCard key={status.overtimeType} status={status} />
         ))}
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <ErpSubmissionsCard />
       </div>
     </div>
   );

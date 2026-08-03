@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import {
+  getErpSubmissionViewScope,
+} from "@/lib/erp-submission-access";
+import {
   createErpSubmission,
-  getErpSubmissionById,
   listErpSubmissions,
 } from "@/lib/erp-submission-store";
+import { listDistinctDepartments } from "@/lib/users-store";
 import type { ErpSubmissionPayload, OvertimeType } from "@/lib/types";
 
 function parseOvertimeType(value: string | undefined): OvertimeType | null {
@@ -67,6 +70,7 @@ export async function POST(request: Request) {
       overtimeType: parseOvertimeType(body.overtimeType!)!,
       userId: user.id,
       userName: user.name,
+      department: user.department,
       yearMonth: payload.yearMonth,
       recordCount: body.recordCount ?? 0,
       personCount: body.personCount ?? payload.personBlocks.length,
@@ -93,17 +97,39 @@ export async function GET(request: Request) {
       searchParams.get("overtimeType")?.trim() || undefined,
     );
     const yearMonth = searchParams.get("yearMonth")?.trim() || undefined;
-    const scope = searchParams.get("scope");
-    const isAdminScope = scope === "all" && user.role === "admin";
+    const viewScope = getErpSubmissionViewScope(user);
+
+    let userId: string | undefined;
+    let department: string | undefined;
+
+    if (viewScope === "own") {
+      userId = user.id;
+    } else if (viewScope === "department") {
+      department = user.department.trim() || undefined;
+    } else {
+      const departmentFilter = searchParams.get("department")?.trim();
+      if (departmentFilter) {
+        department = departmentFilter;
+      }
+    }
 
     const submissions = await listErpSubmissions({
       overtimeType: overtimeType ?? undefined,
       yearMonth,
-      userId: isAdminScope ? undefined : user.id,
-      limit: isAdminScope ? 200 : 50,
+      userId,
+      department,
+      limit: viewScope === "own" ? 50 : 200,
     });
 
-    return NextResponse.json({ submissions });
+    const departments =
+      viewScope === "all" ? await listDistinctDepartments() : undefined;
+
+    return NextResponse.json({
+      submissions,
+      viewScope,
+      departments,
+      fixedDepartment: viewScope === "department" ? user.department : undefined,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "ERP 제출 내역 조회에 실패했습니다.";

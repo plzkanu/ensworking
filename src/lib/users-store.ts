@@ -365,6 +365,29 @@ export async function importUsersFromExcel(
   return results;
 }
 
+export async function listDistinctDepartments(): Promise<string[]> {
+  requireSupabase();
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("ens_users")
+    .select("department")
+    .eq("active", true);
+
+  if (error) {
+    throw new Error(formatSupabaseNetworkError(error.message));
+  }
+
+  const departments = new Set<string>();
+  for (const row of data ?? []) {
+    const value = (row as { department?: string }).department?.trim();
+    if (value) {
+      departments.add(value);
+    }
+  }
+
+  return [...departments].sort((a, b) => a.localeCompare(b, "ko"));
+}
+
 export async function deleteUser(id: string, currentUserId: string): Promise<void> {
   requireSupabase();
   if (id === currentUserId) {

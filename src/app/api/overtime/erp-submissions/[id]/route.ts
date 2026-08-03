@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
+import { canAccessErpSubmission } from "@/lib/erp-submission-access";
 import { getErpSubmissionById } from "@/lib/erp-submission-store";
 
 interface RouteContext {
@@ -22,7 +23,7 @@ export async function GET(_request: Request, context: RouteContext) {
       );
     }
 
-    if (user.role !== "admin" && submission.userId !== user.id) {
+    if (!canAccessErpSubmission(user, submission)) {
       return NextResponse.json({ error: "권한이 없습니다." }, { status: 403 });
     }
 

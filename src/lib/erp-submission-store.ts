@@ -8,6 +8,7 @@ interface ErpSubmissionRow {
   overtime_type: OvertimeType;
   user_id: string;
   user_name: string;
+  department: string;
   year_month: string;
   record_count: number;
   person_count: number;
@@ -29,6 +30,7 @@ function mapSubmission(row: ErpSubmissionRow): ErpSubmission {
     overtimeType: row.overtime_type,
     userId: row.user_id,
     userName: row.user_name,
+    department: row.department ?? "",
     yearMonth: row.year_month,
     recordCount: row.record_count,
     personCount: row.person_count,
@@ -41,6 +43,7 @@ export async function createErpSubmission(input: {
   overtimeType: OvertimeType;
   userId: string;
   userName: string;
+  department: string;
   yearMonth: string;
   recordCount: number;
   personCount: number;
@@ -54,6 +57,7 @@ export async function createErpSubmission(input: {
       overtime_type: input.overtimeType,
       user_id: input.userId,
       user_name: input.userName,
+      department: input.department,
       year_month: input.yearMonth,
       record_count: input.recordCount,
       person_count: input.personCount,
@@ -73,6 +77,7 @@ export async function listErpSubmissions(options?: {
   overtimeType?: OvertimeType;
   yearMonth?: string;
   userId?: string;
+  department?: string;
   limit?: number;
 }): Promise<ErpSubmission[]> {
   requireSupabase();
@@ -93,6 +98,9 @@ export async function listErpSubmissions(options?: {
   }
   if (options?.userId) {
     query = query.eq("user_id", options.userId);
+  }
+  if (options?.department) {
+    query = query.eq("department", options.department);
   }
 
   const { data, error } = await query;

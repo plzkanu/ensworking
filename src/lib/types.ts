@@ -106,6 +106,7 @@ export interface ErpSubmission {
   overtimeType: OvertimeType;
   userId: string;
   userName: string;
+  department: string;
   yearMonth: string;
   recordCount: number;
   personCount: number;
