@@ -192,6 +192,39 @@ export function UserManagementPanel() {
     }
   }
 
+  async function handleResetPassword(id: string, name: string) {
+    if (
+      !window.confirm(
+        `"${name}" 사용자의 비밀번호를 "${id}!!"로 초기화하시겠습니까?\n다음 로그인 시 비밀번호 변경이 필요합니다.`,
+      )
+    ) {
+      return;
+    }
+
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(
+        `/api/admin/users/${encodeURIComponent(id)}/reset-password`,
+        { method: "POST" },
+      );
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error ?? "비밀번호 초기화에 실패했습니다.");
+      }
+      setMessage(
+        `"${name}" 사용자의 비밀번호가 초기화되었습니다. (초기 비밀번호: ${id}!!)`,
+      );
+      await loadData();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "비밀번호 초기화 중 오류가 발생했습니다.",
+      );
+    }
+  }
+
   async function handleDelete(id: string, name: string) {
     if (!window.confirm(`"${name}" 사용자를 삭제하시겠습니까?`)) {
       return;
@@ -534,13 +567,20 @@ export function UserManagementPanel() {
                       )}
                     </td>
                     <td className="px-2 py-2">
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={() => startEdit(user)}
                           className="text-[#004b87] hover:underline"
                         >
                           수정
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleResetPassword(user.id, user.name)}
+                          className="text-amber-700 hover:underline"
+                        >
+                          비밀번호 초기화
                         </button>
                         <button
                           type="button"

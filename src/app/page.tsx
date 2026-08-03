@@ -1,7 +1,6 @@
-import { redirect } from "next/navigation";
-import { getSessionUser } from "@/lib/auth";
+import { HomeRedirect } from "@/components/home-redirect";
 
-export default async function HomePage() {
-  const user = await getSessionUser();
-  redirect(user ? "/dashboard" : "/login");
+/** Replit 배포 헬스체크는 / 에서 200 응답을 요구합니다. */
+export default function HomePage() {
+  return <HomeRedirect />;
 }

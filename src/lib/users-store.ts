@@ -16,6 +16,7 @@ interface EnsUserRow {
   role: RoleCode;
   department: string;
   active: boolean;
+  must_change_password: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -30,9 +31,14 @@ function mapUser(row: EnsUserRow): User {
     department: row.department ?? "",
     role: row.role,
     active: row.active,
+    mustChangePassword: row.must_change_password ?? false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function defaultResetPassword(userId: string): string {
+  return `${userId}!!`;
 }
 
 function requireSupabase() {
@@ -192,6 +198,7 @@ export async function updateUser(
     department?: string;
     role?: RoleCode;
     active?: boolean;
+    mustChangePassword?: boolean;
   },
 ): Promise<User> {
   requireSupabase();
@@ -201,6 +208,9 @@ export async function updateUser(
 
   if (input.password) {
     updates.password_hash = await bcrypt.hash(input.password, 10);
+    if (input.mustChangePassword === undefined) {
+      updates.must_change_password = false;
+    }
   }
   if (input.employeeNumber !== undefined) {
     updates.employee_number = input.employeeNumber.trim();
@@ -212,6 +222,9 @@ export async function updateUser(
   }
   if (input.role !== undefined) updates.role = input.role;
   if (input.active !== undefined) updates.active = input.active;
+  if (input.mustChangePassword !== undefined) {
+    updates.must_change_password = input.mustChangePassword;
+  }
 
   const supabase = createServerClient();
   const { data, error } = await supabase
@@ -229,6 +242,49 @@ export async function updateUser(
   }
 
   return mapUser(data as EnsUserRow);
+}
+
+export async function resetUserPassword(id: string): Promise<User> {
+  const user = await getUserById(id);
+  if (!user) {
+    throw new Error("사용자를 찾을 수 없습니다.");
+  }
+
+  return updateUser(id, {
+    password: defaultResetPassword(id),
+    mustChangePassword: true,
+  });
+}
+
+export async function changeUserPassword(
+  id: string,
+  input: { currentPassword: string; newPassword: string },
+): Promise<User> {
+  const user = await getUserById(id);
+  if (!user) {
+    throw new Error("사용자를 찾을 수 없습니다.");
+  }
+
+  const valid = await bcrypt.compare(input.currentPassword, user.passwordHash);
+  if (!valid) {
+    throw new Error("현재 비밀번호가 올바르지 않습니다.");
+  }
+
+  const newPassword = input.newPassword.trim();
+  if (!newPassword) {
+    throw new Error("새 비밀번호를 입력해 주세요.");
+  }
+
+  if (newPassword === defaultResetPassword(id)) {
+    throw new Error(
+      "초기화 비밀번호는 사용할 수 없습니다. 다른 비밀번호를 입력해 주세요.",
+    );
+  }
+
+  return updateUser(id, {
+    password: newPassword,
+    mustChangePassword: false,
+  });
 }
 
 export async function importUsersFromExcel(

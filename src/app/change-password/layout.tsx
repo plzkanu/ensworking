@@ -2,17 +2,18 @@ import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/auth";
 import { getUserById } from "@/lib/users-store";
 
-export default async function LoginLayout({
+export default async function ChangePasswordLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getSessionUser();
-  if (user) {
-    const dbUser = await getUserById(user.id);
-    if (dbUser?.mustChangePassword) {
-      redirect("/change-password");
-    }
+  const session = await getSessionUser();
+  if (!session) {
+    redirect("/login");
+  }
+
+  const user = await getUserById(session.id);
+  if (!user?.mustChangePassword) {
     redirect("/dashboard");
   }
 

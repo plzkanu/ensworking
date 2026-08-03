@@ -1,8 +1,14 @@
-export interface NavItem {
+export interface NavSubItem {
   href: string;
+  label: string;
+}
+
+export interface NavItem {
+  href?: string;
   label: string;
   icon: string;
   adminOnly?: boolean;
+  children?: NavSubItem[];
 }
 
 export const mainNavItems: NavItem[] = [
@@ -18,15 +24,18 @@ export const mainNavItems: NavItem[] = [
     icon: "🔄",
   },
   {
-    href: "/dashboard/admin/users",
-    label: "사용자 관리",
-    icon: "👥",
+    label: "관리자",
+    icon: "⚙️",
     adminOnly: true,
-  },
-  {
-    href: "/dashboard/admin/roles",
-    label: "역할 관리",
-    icon: "🛡️",
-    adminOnly: true,
+    children: [
+      { href: "/dashboard/admin/users", label: "사용자 관리" },
+      { href: "/dashboard/admin/roles", label: "역할 관리" },
+      { href: "/dashboard/admin/access-status", label: "접속 현황" },
+      { href: "/dashboard/admin/activity-logs", label: "사용 로그" },
+    ],
   },
 ];
+
+export function isAdminNavPath(pathname: string): boolean {
+  return pathname.startsWith("/dashboard/admin");
+}

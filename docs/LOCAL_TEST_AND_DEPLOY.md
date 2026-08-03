@@ -301,6 +301,22 @@ cp "시간외근무_유연근무.html" public/overtime/flexible/index.html
 
 **정상 동작**입니다. 미들웨어(`src/middleware.ts`)가 `/overtime/` 경로에 인증을 요구합니다. 먼저 `/login`에서 로그인하세요.
 
+### Replit healthcheck failed (`/` 500 또는 connection refused)
+
+**증상**: 배포 로그에 `healthcheck / returned status 500` 또는 `connection refused`
+
+**원인**:
+1. Replit 헬스체크는 `/` 에 **HTTP 200** 을 5초 이내에 요구합니다 (리다이렉트만으로는 실패할 수 있음)
+2. Cloud Run 배포 시 `PORT` 환경 변수(예: 1104)와 앱 바인딩 포트 불일치
+3. Publishing Secrets 미등록으로 런타임 500
+
+**해결**:
+1. 최신 코드 배포 (`/` 는 200 + 클라이언트 리다이렉트, `scripts/start.mjs` 가 `PORT` 사용)
+2. Publishing Secrets 3종 등록 확인
+3. 배포 후 확인:
+   - `https://<your-app>.replit.app/` → 200 (본문: "이동 중…")
+   - `https://<your-app>.replit.app/api/health` → `{"ok":true,...}`
+
 ### Replit 배포 후 Internal Server Error (500)
 
 **증상**: 배포 URL(`*.replit.app`) 접속 시 모든 페이지에서 `Internal Server Error`
@@ -347,6 +363,26 @@ https://<your-app>.replit.app/api/health
 1. Replit Shell에서 `npm run build` 오류 여부 확인
 2. Secrets 3종(`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AUTH_SECRET`) 등록 확인
 3. **Deploy → Republish** 재실행
+
+### 빌드 실패 (WasmHash / `Cannot read properties of undefined (reading 'length')`)
+
+**증상**: `npm run build` 중 `WasmHash._updateWithBuffer` 또는 `reading 'length'` 오류 (Replit 배포 빌드에서 흔함)
+
+**원인**: webpack 캐시 손상, Replit `artifacts/` 폴더 충돌, 빌드 메모리 부족
+
+**해결**:
+
+```bash
+rm -rf artifacts .next node_modules
+npm install
+npm run build
+```
+
+최신 코드에는 아래 완화 설정이 포함되어 있습니다.
+
+- `prebuild`: `artifacts/`, `.next/cache` 제거
+- `scripts/build.mjs`: Node heap 4GB
+- `next.config.ts`: 프로덕션 webpack 캐시 비활성화 + `sha256` 해시
 
 ### 빌드 실패
 

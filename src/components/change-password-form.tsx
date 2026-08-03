@@ -1,14 +1,14 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { SoosanLogo } from "@/components/soosan-logo";
 
-export function LoginForm() {
+export function ChangePasswordForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const [userId, setUserId] = useState("");
-  const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -16,46 +16,44 @@ export function LoginForm() {
     event.preventDefault();
     setError("");
 
-    if (!userId.trim() || !password.trim()) {
-      setError("아이디와 비밀번호를 입력해 주세요.");
+    if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
+      setError("모든 항목을 입력해 주세요.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError("새 비밀번호와 확인 비밀번호가 일치하지 않습니다.");
+      return;
+    }
+
+    if (newPassword === currentPassword) {
+      setError("새 비밀번호는 현재 비밀번호와 달라야 합니다.");
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch("/api/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: userId.trim(),
-          password,
+          currentPassword,
+          newPassword,
         }),
       });
 
-      const data = (await response.json()) as {
-        error?: string;
-        mustChangePassword?: boolean;
-      };
+      const data = (await response.json()) as { error?: string };
 
       if (!response.ok) {
-        setError(data.error ?? "로그인에 실패했습니다.");
+        setError(data.error ?? "비밀번호 변경에 실패했습니다.");
         return;
       }
 
-      if (data.mustChangePassword) {
-        router.push("/change-password");
-        router.refresh();
-        return;
-      }
-
-      const from = searchParams.get("from");
-      router.push(
-        from && from.startsWith("/dashboard") ? from : "/dashboard",
-      );
+      router.push("/dashboard");
       router.refresh();
     } catch {
-      setError("로그인 처리 중 오류가 발생했습니다.");
+      setError("비밀번호 변경 중 오류가 발생했습니다.");
     } finally {
       setIsSubmitting(false);
     }
@@ -72,56 +70,66 @@ export function LoginForm() {
       <div className="w-full rounded-2xl border border-slate-200 bg-white px-8 py-10 shadow-lg shadow-slate-200/60">
         <div className="mb-8 text-center">
           <h1 className="text-xl font-bold tracking-tight text-[#004b87]">
-            시간외근무 ERP
+            비밀번호 변경
           </h1>
           <p className="mt-2 text-sm text-slate-500">
-            시스템 이용을 위해 로그인해 주세요.
+            초기화된 비밀번호로 로그인하셨습니다.
+            <br />
+            서비스 이용을 위해 새 비밀번호를 설정해 주세요.
           </p>
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-5"
-          autoComplete="off"
-        >
+        <form onSubmit={handleSubmit} className="space-y-5" autoComplete="off">
           <div>
             <label
-              htmlFor="userId"
+              htmlFor="currentPassword"
               className="mb-1.5 block text-sm font-medium text-slate-700"
             >
-              아이디
+              현재 비밀번호
             </label>
             <input
-              id="userId"
-              name="ens-login-id"
-              type="text"
-              autoComplete="off"
-              readOnly
-              value={userId}
-              onFocus={(event) => event.currentTarget.removeAttribute("readOnly")}
-              onChange={(event) => setUserId(event.target.value)}
-              placeholder="아이디를 입력하세요"
+              id="currentPassword"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              placeholder="현재 비밀번호"
               className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"
             />
           </div>
 
           <div>
             <label
-              htmlFor="password"
+              htmlFor="newPassword"
               className="mb-1.5 block text-sm font-medium text-slate-700"
             >
-              비밀번호
+              새 비밀번호
             </label>
             <input
-              id="password"
-              name="ens-login-password"
+              id="newPassword"
               type="password"
               autoComplete="new-password"
-              readOnly
-              value={password}
-              onFocus={(event) => event.currentTarget.removeAttribute("readOnly")}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="비밀번호를 입력하세요"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              placeholder="새 비밀번호"
+              className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"
+            />
+          </div>
+
+          <div>
+            <label
+              htmlFor="confirmPassword"
+              className="mb-1.5 block text-sm font-medium text-slate-700"
+            >
+              새 비밀번호 확인
+            </label>
+            <input
+              id="confirmPassword"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="새 비밀번호 확인"
               className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"
             />
           </div>
@@ -137,7 +145,7 @@ export function LoginForm() {
             disabled={isSubmitting}
             className="w-full rounded-lg bg-[#004b87] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#003a6a] focus:outline-none focus:ring-2 focus:ring-[#004b87]/30 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isSubmitting ? "로그인 중..." : "로그인"}
+            {isSubmitting ? "변경 중..." : "비밀번호 변경"}
           </button>
         </form>
       </div>

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { attachSessionCookie } from "@/lib/auth";
+import { logUserAccess } from "@/lib/access-log-store";
+import { logUserActivity } from "@/lib/activity-log-store";
+import { getRequestMeta } from "@/lib/request-meta";
+import { toSessionUser } from "@/lib/types";
 import { verifyUserCredentials } from "@/lib/users-store";
 
 export async function POST(request: Request) {
@@ -27,16 +31,26 @@ export async function POST(request: Request) {
       );
     }
 
-    const sessionUser = {
-      id: user.id,
-      name: user.name,
-      employeeNumber: user.employeeNumber,
-      position: user.position,
-      department: user.department ?? "",
-      role: user.role,
-    };
+    const { ip, userAgent } = getRequestMeta(request);
+    await logUserAccess({
+      userId: user.id,
+      eventType: "login",
+      ipAddress: ip,
+      userAgent,
+    });
+    await logUserActivity({
+      userId: user.id,
+      action: "login",
+      resource: "/login",
+      ipAddress: ip,
+    });
 
-    const response = NextResponse.json({ user: sessionUser });
+    const sessionUser = toSessionUser(user);
+
+    const response = NextResponse.json({
+      user: sessionUser,
+      mustChangePassword: user.mustChangePassword,
+    });
 
     return attachSessionCookie(response, sessionUser);
   } catch (error) {

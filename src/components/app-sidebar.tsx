@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
 import { SoosanLogo } from "@/components/soosan-logo";
-import { mainNavItems } from "@/lib/nav";
+import { isAdminNavPath, mainNavItems, type NavItem } from "@/lib/nav";
 import type { SessionUser } from "@/lib/types";
 
 interface AppSidebarProps {
@@ -18,12 +19,26 @@ function isNavActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+function isItemActive(pathname: string, item: NavItem) {
+  if (item.href) {
+    return isNavActive(pathname, item.href);
+  }
+  return item.children?.some((child) => isNavActive(pathname, child.href)) ?? false;
+}
+
 export function AppSidebar({ user }: AppSidebarProps) {
   const pathname = usePathname();
   const items = mainNavItems.filter(
     (item) => !item.adminOnly || user.role === "admin",
   );
   const initial = user.name.trim().charAt(0) || user.id.charAt(0);
+  const [adminOpen, setAdminOpen] = useState(() => isAdminNavPath(pathname));
+
+  useEffect(() => {
+    if (isAdminNavPath(pathname)) {
+      setAdminOpen(true);
+    }
+  }, [pathname]);
 
   return (
     <aside className="fixed top-0 left-0 z-[100] flex h-screen w-[220px] flex-col bg-[#0F2645]">
@@ -44,11 +59,64 @@ export function AppSidebar({ user }: AppSidebarProps) {
         </p>
         <ul className="px-2">
           {items.map((item) => {
-            const active = isNavActive(pathname, item.href);
+            if (item.children) {
+              const groupActive = isItemActive(pathname, item);
+              return (
+                <li key={item.label}>
+                  <button
+                    type="button"
+                    onClick={() => setAdminOpen((open) => !open)}
+                    className={`relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] transition ${
+                      groupActive
+                        ? "bg-[#1E5FD4]/25 font-medium text-white"
+                        : "text-white/65 hover:bg-white/6 hover:text-white"
+                    }`}
+                  >
+                    {groupActive ? (
+                      <span
+                        aria-hidden
+                        className="absolute top-1/2 left-0 h-5 w-[3px] -translate-y-1/2 rounded-r bg-[#1E5FD4]"
+                      />
+                    ) : null}
+                    <span aria-hidden>{item.icon}</span>
+                    <span className="flex-1 text-left">{item.label}</span>
+                    <span
+                      aria-hidden
+                      className={`text-[10px] transition ${adminOpen ? "rotate-90" : ""}`}
+                    >
+                      ▶
+                    </span>
+                  </button>
+                  {adminOpen ? (
+                    <ul className="mb-1 ml-3 border-l border-white/10 pl-2">
+                      {item.children.map((child) => {
+                        const active = isNavActive(pathname, child.href);
+                        return (
+                          <li key={child.href}>
+                            <Link
+                              href={child.href}
+                              className={`mb-0.5 block rounded-lg px-3 py-2 text-[12px] transition ${
+                                active
+                                  ? "bg-[#1E5FD4]/20 font-medium text-white"
+                                  : "text-white/55 hover:bg-white/6 hover:text-white"
+                              }`}
+                            >
+                              {child.label}
+                            </Link>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
+                </li>
+              );
+            }
+
+            const active = isNavActive(pathname, item.href!);
             return (
               <li key={item.href}>
                 <Link
-                  href={item.href}
+                  href={item.href!}
                   className={`relative mb-0.5 flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] transition ${
                     active
                       ? "bg-[#1E5FD4]/25 font-medium text-white"

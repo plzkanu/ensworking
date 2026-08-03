@@ -20,6 +20,7 @@ export interface User {
   department: string;
   role: RoleCode;
   active: boolean;
+  mustChangePassword: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -33,6 +34,7 @@ export interface UserPublic {
   department: string;
   role: RoleCode;
   active: boolean;
+  mustChangePassword: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,6 +48,32 @@ export interface SessionUser {
   role: RoleCode;
 }
 
+export interface UserAccessStatus {
+  userId: string;
+  userName: string;
+  department: string;
+  role: RoleCode;
+  active: boolean;
+  lastLoginAt: string | null;
+  lastLogoutAt: string | null;
+  lastLoginIp: string;
+  isOnline: boolean;
+  loginCount30d: number;
+  lastActivityAt: string | null;
+  lastActivityResource: string;
+}
+
+export interface ActivityLogEntry {
+  id: string;
+  userId: string;
+  userName: string;
+  action: string;
+  resource: string;
+  detail: string;
+  ipAddress: string;
+  createdAt: string;
+}
+
 export function toUserPublic(user: User): UserPublic {
   return {
     id: user.id,
@@ -55,6 +83,7 @@ export function toUserPublic(user: User): UserPublic {
     department: user.department,
     role: user.role,
     active: user.active,
+    mustChangePassword: user.mustChangePassword,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

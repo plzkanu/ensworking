@@ -7,9 +7,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const artifacts = path.join(root, "artifacts");
 
-if (fs.existsSync(artifacts)) {
-  fs.rmSync(artifacts, { recursive: true, force: true });
-  console.log("[prebuild] removed artifacts/");
+for (const dir of ["artifacts", path.join(".next", "cache")]) {
+  const target = path.join(root, dir);
+  if (fs.existsSync(target)) {
+    fs.rmSync(target, { recursive: true, force: true });
+    console.log(`[prebuild] removed ${dir}/`);
+  }
 }

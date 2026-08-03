@@ -1,5 +1,3 @@
-import { isSupabaseTlsInsecure } from "./config";
-
 export function formatSupabaseNetworkError(message: string): string {
   const normalized = message.toLowerCase();
   if (normalized.includes("could not find the table")) {
@@ -23,19 +21,4 @@ export function formatSupabaseNetworkError(message: string): string {
     );
   }
   return message;
-}
-
-let supabaseTlsBypassApplied = false;
-
-export function applySupabaseTlsBypassIfConfigured(): void {
-  if (supabaseTlsBypassApplied || !isSupabaseTlsInsecure()) {
-    return;
-  }
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-  supabaseTlsBypassApplied = true;
-  if (process.env.NODE_ENV !== "production") {
-    console.warn(
-      "[supabase] SUPABASE_SSL_VERIFY=0 — TLS 인증서 검증을 생략합니다.",
-    );
-  }
 }

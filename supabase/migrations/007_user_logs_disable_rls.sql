@@ -1,0 +1,2 @@
+ALTER TABLE ens_user_access_logs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE ens_user_activity_logs DISABLE ROW LEVEL SECURITY;
