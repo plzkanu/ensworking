@@ -77,9 +77,7 @@ export async function POST(request: Request) {
 
     const existingSubmissions = await listErpSubmissions({
       overtimeType,
-      yearMonth: payload.yearMonth,
-      userId: user.id,
-      limit: 100,
+      limit: 500,
     });
 
     const incomingRecords = collectRecordFingerprints(payload);

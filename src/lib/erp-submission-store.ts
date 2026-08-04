@@ -24,6 +24,23 @@ function requireSupabase() {
   }
 }
 
+function parsePayload(raw: unknown): ErpSubmissionPayload {
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as ErpSubmissionPayload;
+    } catch {
+      return { year: 0, month: 0, yearMonth: "", dates: [], personBlocks: [] };
+    }
+  }
+  return (raw as ErpSubmissionPayload) ?? {
+    year: 0,
+    month: 0,
+    yearMonth: "",
+    dates: [],
+    personBlocks: [],
+  };
+}
+
 function mapSubmission(row: ErpSubmissionRow): ErpSubmission {
   return {
     id: row.id,
@@ -34,7 +51,7 @@ function mapSubmission(row: ErpSubmissionRow): ErpSubmission {
     yearMonth: row.year_month,
     recordCount: row.record_count,
     personCount: row.person_count,
-    payload: row.payload,
+    payload: parsePayload(row.payload),
     createdAt: row.created_at,
   };
 }
