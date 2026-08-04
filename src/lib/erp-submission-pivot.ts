@@ -136,12 +136,7 @@ export function mergePersonBlocks(
     });
   }
 
-  return blocks.sort(
-    (a, b) =>
-      a.dept.localeCompare(b.dept, "ko") ||
-      a.name.localeCompare(b.name, "ko") ||
-      a.empno.localeCompare(b.empno),
-  );
+  return blocks.sort((a, b) => a.dept.localeCompare(b.dept, "ko"));
 }
 
 export function buildErpPivotModel(

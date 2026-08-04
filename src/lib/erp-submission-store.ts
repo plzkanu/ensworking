@@ -73,11 +73,16 @@ export async function createErpSubmission(input: {
   return mapSubmission(data as ErpSubmissionRow);
 }
 
+function escapeIlikePattern(value: string): string {
+  return value.replace(/[%_\\]/g, "\\$&");
+}
+
 export async function listErpSubmissions(options?: {
   overtimeType?: OvertimeType;
   yearMonth?: string;
   userId?: string;
   department?: string;
+  submitterName?: string;
   limit?: number;
 }): Promise<ErpSubmission[]> {
   requireSupabase();
@@ -101,6 +106,12 @@ export async function listErpSubmissions(options?: {
   }
   if (options?.department) {
     query = query.eq("department", options.department);
+  }
+  if (options?.submitterName?.trim()) {
+    query = query.ilike(
+      "user_name",
+      `%${escapeIlikePattern(options.submitterName.trim())}%`,
+    );
   }
 
   const { data, error } = await query;
@@ -127,4 +138,42 @@ export async function getErpSubmissionById(
   }
 
   return data ? mapSubmission(data as ErpSubmissionRow) : null;
+}
+
+export async function updateErpSubmission(
+  id: string,
+  input: {
+    recordCount: number;
+    personCount: number;
+    payload: ErpSubmissionPayload;
+  },
+): Promise<ErpSubmission> {
+  requireSupabase();
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("ens_erp_submissions")
+    .update({
+      record_count: input.recordCount,
+      person_count: input.personCount,
+      payload: input.payload,
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(formatSupabaseNetworkError(error.message));
+  }
+
+  return mapSubmission(data as ErpSubmissionRow);
+}
+
+export async function deleteErpSubmission(id: string): Promise<void> {
+  requireSupabase();
+  const supabase = createServerClient();
+  const { error } = await supabase.from("ens_erp_submissions").delete().eq("id", id);
+
+  if (error) {
+    throw new Error(formatSupabaseNetworkError(error.message));
+  }
 }

@@ -74,6 +74,21 @@ export interface ActivityLogEntry {
   createdAt: string;
 }
 
+export interface AdminChangeLogEntry {
+  id: string;
+  adminId: string;
+  adminName: string;
+  category: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  summary: string;
+  detail: Record<string, unknown>;
+  ipAddress: string;
+  recordedDate: string;
+  createdAt: string;
+}
+
 export type OvertimeType = "regular" | "flexible";
 
 export interface ErpSubmissionDayEntry {

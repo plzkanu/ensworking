@@ -36,6 +36,7 @@ export const mainNavItems: NavItem[] = [
       { href: "/dashboard/admin/users", label: "사용자 관리" },
       { href: "/dashboard/admin/roles", label: "역할 관리" },
       { href: "/dashboard/admin/overtime-windows", label: "등록 기간 설정" },
+      { href: "/dashboard/admin/change-logs", label: "수정 현황" },
       { href: "/dashboard/admin/access-status", label: "접속 현황" },
       { href: "/dashboard/admin/activity-logs", label: "사용 로그" },
     ],

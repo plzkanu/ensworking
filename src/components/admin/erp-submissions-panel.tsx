@@ -2,8 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ErpSubmissionPivotTable } from "@/components/admin/erp-submission-pivot-table";
-import { ErpSubmissionResultTable } from "@/components/admin/erp-submission-result-table";
-import { inputClassName, labelClassName } from "@/components/admin/form-styles";
+import {
+  ErpSubmissionResultTable,
+  ERP_LIST_DEFAULT_PAGE_SIZE,
+  type ErpListPageSize,
+} from "@/components/admin/erp-submission-result-table";
+import { buttonDangerClassName, buttonPrimaryClassName, inputClassName, labelClassName } from "@/components/admin/form-styles";
 import type { ErpSubmissionViewScope } from "@/lib/erp-submission-access";
 import {
   ERP_FORM_VERSIONS,
@@ -13,9 +17,14 @@ import {
 import { buildErpPivotModel, downloadErpPivotExcel } from "@/lib/erp-submission-pivot";
 import {
   downloadErpSubmissionExcel,
+  erpRowToRecordRef,
   flattenSubmissionsToRows,
+  getErpSubmissionRowKey,
 } from "@/lib/erp-submission-rows";
 import type { ErpSubmission } from "@/lib/types";
+
+const filterButtonOutlineClassName =
+  "shrink-0 rounded-lg border border-[#004b87] px-4 py-2 text-sm font-semibold text-[#004b87] transition hover:bg-[#004b87]/5 disabled:cursor-not-allowed disabled:opacity-40";
 
 export function ErpSubmissionsPanel() {
   const [submissions, setSubmissions] = useState<ErpSubmission[]>([]);
@@ -25,10 +34,17 @@ export function ErpSubmissionsPanel() {
   const [overtimeType, setOvertimeType] = useState("");
   const [yearMonth, setYearMonth] = useState("");
   const [department, setDepartment] = useState("");
+  const [submitterName, setSubmitterName] = useState("");
   const [viewScope, setViewScope] = useState<ErpSubmissionViewScope>("own");
   const [departments, setDepartments] = useState<string[]>([]);
   const [fixedDepartment, setFixedDepartment] = useState("");
   const [formVersion, setFormVersion] = useState<ErpFormVersion>("list");
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
+  const [listPageSize, setListPageSize] = useState<ErpListPageSize>(
+    ERP_LIST_DEFAULT_PAGE_SIZE,
+  );
+  const [listPage, setListPage] = useState(1);
 
   const resultRows = useMemo(
     () => flattenSubmissionsToRows(submissions),
@@ -43,6 +59,7 @@ export function ErpSubmissionsPanel() {
     overtimeType?: string;
     yearMonth?: string;
     department?: string;
+    submitterName?: string;
   }) {
     setLoading(true);
     setError("");
@@ -51,9 +68,11 @@ export function ErpSubmissionsPanel() {
       const type = filters?.overtimeType ?? overtimeType;
       const month = filters?.yearMonth ?? yearMonth;
       const dept = filters?.department ?? department;
+      const submitter = filters?.submitterName ?? submitterName;
       if (type) params.set("overtimeType", type);
       if (month) params.set("yearMonth", month);
       if (dept) params.set("department", dept);
+      if (submitter.trim()) params.set("submitterName", submitter.trim());
 
       const response = await fetch(`/api/overtime/erp-submissions?${params.toString()}`);
       const data = (await response.json()) as {
@@ -67,6 +86,8 @@ export function ErpSubmissionsPanel() {
         throw new Error(data.error ?? "제출 내역을 불러오지 못했습니다.");
       }
       setSubmissions(data.submissions ?? []);
+      setSelectedRowKeys(new Set());
+      setListPage(1);
       if (data.viewScope) {
         setViewScope(data.viewScope);
       }
@@ -95,7 +116,9 @@ export function ErpSubmissionsPanel() {
         if (!resultRows.length) {
           return;
         }
-        await downloadErpSubmissionExcel(resultRows);
+        await downloadErpSubmissionExcel(resultRows, undefined, {
+          includeSubmitter: viewScope === "all",
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "엑셀 다운로드 실패");
@@ -104,13 +127,52 @@ export function ErpSubmissionsPanel() {
     }
   }
 
+  async function handleDeleteSelected() {
+    const selectedRows = resultRows.filter((row) =>
+      selectedRowKeys.has(getErpSubmissionRowKey(row)),
+    );
+    if (selectedRows.length === 0) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `선택한 ${selectedRows.length}건의 근무 기록을 삭제하시겠습니까?\n삭제 내용은 ERP 양식에도 반영됩니다.`,
+      )
+    ) {
+      return;
+    }
+
+    setDeleting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/overtime/erp-submissions/delete-records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          records: selectedRows.map((row) => erpRowToRecordRef(row)),
+        }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error ?? "삭제에 실패했습니다.");
+      }
+
+      setSelectedRowKeys(new Set());
+      await loadSubmissions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "삭제 실패");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   useEffect(() => {
     void loadSubmissions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filterCols =
-    viewScope === "all" ? "md:grid-cols-4" : viewScope === "department" ? "md:grid-cols-4" : "md:grid-cols-3";
+  const showSubmitterFilter = viewScope !== "own";
 
   const canDownload =
     formVersion === "erp"
@@ -125,9 +187,9 @@ export function ErpSubmissionsPanel() {
 
   return (
     <div className="space-y-4">
-      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className={`grid gap-3 ${filterCols}`}>
-          <div>
+      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-nowrap items-end gap-3 overflow-x-auto">
+          <div className="w-64 shrink-0">
             <label htmlFor="erp-type" className={labelClassName}>
               유형
             </label>
@@ -142,7 +204,7 @@ export function ErpSubmissionsPanel() {
               <option value="flexible">유연</option>
             </select>
           </div>
-          <div>
+          <div className="w-64 shrink-0">
             <label htmlFor="erp-month" className={labelClassName}>
               대상 연월
             </label>
@@ -155,7 +217,7 @@ export function ErpSubmissionsPanel() {
             />
           </div>
           {viewScope === "all" ? (
-            <div>
+            <div className="w-64 shrink-0">
               <label htmlFor="erp-department" className={labelClassName}>
                 소속
               </label>
@@ -175,7 +237,7 @@ export function ErpSubmissionsPanel() {
             </div>
           ) : null}
           {viewScope === "department" ? (
-            <div>
+            <div className="w-64 shrink-0">
               <label htmlFor="erp-department-fixed" className={labelClassName}>
                 소속
               </label>
@@ -188,11 +250,26 @@ export function ErpSubmissionsPanel() {
               />
             </div>
           ) : null}
-          <div className="flex items-end gap-2">
+          {showSubmitterFilter ? (
+            <div className="w-64 shrink-0">
+              <label htmlFor="erp-submitter" className={labelClassName}>
+                등록자
+              </label>
+              <input
+                id="erp-submitter"
+                type="text"
+                className={inputClassName}
+                value={submitterName}
+                onChange={(e) => setSubmitterName(e.target.value)}
+                placeholder="이름으로 검색"
+              />
+            </div>
+          ) : null}
+          <div className="ml-auto flex shrink-0 items-end gap-2 pl-2">
             <button
               type="button"
               onClick={() => void loadSubmissions()}
-              className="rounded-lg bg-[#004b87] px-4 py-2 text-sm font-semibold text-white hover:bg-[#003a6a]"
+              className={buttonPrimaryClassName}
             >
               조회
             </button>
@@ -200,7 +277,7 @@ export function ErpSubmissionsPanel() {
               type="button"
               onClick={() => void handleDownloadExcel()}
               disabled={downloading || !canDownload}
-              className="rounded-lg border border-[#004b87] px-4 py-2 text-sm font-semibold text-[#004b87] hover:bg-[#004b87]/5 disabled:cursor-not-allowed disabled:opacity-40"
+              className={filterButtonOutlineClassName}
             >
               {downloading ? "다운로드 중..." : "엑셀 다운로드"}
             </button>
@@ -214,12 +291,30 @@ export function ErpSubmissionsPanel() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-600">{summaryText}</p>
-        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {formVersion === "list" && resultRows.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => void handleDeleteSelected()}
+              disabled={deleting || selectedRowKeys.size === 0}
+              className={buttonDangerClassName}
+            >
+              {deleting
+                ? "삭제 중..."
+                : `선택 삭제${selectedRowKeys.size > 0 ? ` (${selectedRowKeys.size})` : ""}`}
+            </button>
+          ) : null}
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1">
           {ERP_FORM_VERSIONS.map((version) => (
             <button
               key={version.id}
               type="button"
-              onClick={() => setFormVersion(getErpFormVersion(version.id))}
+              onClick={() => {
+                setFormVersion(getErpFormVersion(version.id));
+                if (version.id !== "list") {
+                  setSelectedRowKeys(new Set());
+                }
+              }}
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                 formVersion === version.id
                   ? "bg-white text-[#004b87] shadow-sm"
@@ -229,6 +324,7 @@ export function ErpSubmissionsPanel() {
               {version.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -242,7 +338,20 @@ export function ErpSubmissionsPanel() {
           filterYearMonth={yearMonth || undefined}
         />
       ) : (
-        <ErpSubmissionResultTable submissions={submissions} />
+        <ErpSubmissionResultTable
+          submissions={submissions}
+          showSubmitter={viewScope === "all"}
+          selectable
+          selectedKeys={selectedRowKeys}
+          onSelectedKeysChange={setSelectedRowKeys}
+          pageSize={listPageSize}
+          page={listPage}
+          onPageChange={setListPage}
+          onPageSizeChange={(size) => {
+            setListPageSize(size);
+            setListPage(1);
+          }}
+        />
       )}
     </div>
   );

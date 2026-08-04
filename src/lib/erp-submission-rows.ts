@@ -1,3 +1,4 @@
+import type { ErpSubmissionRecordRef } from "./erp-submission-mutations";
 import type {
   ErpSubmission,
   ErpSubmissionDayEntry,
@@ -23,6 +24,8 @@ export const ERP_EXCEL_HEADERS = [
 
 export interface ErpSubmissionExcelRow {
   seq: number;
+  submissionId: string;
+  slotIndex: number;
   name: string;
   dept: string;
   empno: string;
@@ -36,7 +39,11 @@ export interface ErpSubmissionExcelRow {
   holLabel: string;
   notes: string;
   file: string;
+  submittedByName: string;
+  submittedByDepartment: string;
 }
+
+export const ERP_SUBMITTER_HEADER = "등록자";
 
 const DAY_KR = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -104,11 +111,13 @@ function flattenSubmission(submission: ErpSubmission): ErpSubmissionExcelRow[] {
   const rows: ErpSubmissionExcelRow[] = [];
 
   for (const block of submission.payload.personBlocks) {
-    for (const slot of block.slots) {
+    block.slots.forEach((slot, slotIndex) => {
       for (const [date, entry] of Object.entries(slot)) {
         const labels = buildRowLabels(date, entry);
         rows.push({
           seq: 0,
+          submissionId: submission.id,
+          slotIndex,
           name: block.name || "",
           dept: block.dept || "",
           empno: block.empno || "",
@@ -118,10 +127,12 @@ function flattenSubmission(submission: ErpSubmission): ErpSubmissionExcelRow[] {
           end: entry.end || "",
           hours: entry.hours ?? "",
           file: buildFileLabel(submission.yearMonth, block),
+          submittedByName: submission.userName || "",
+          submittedByDepartment: submission.department || "",
           ...labels,
         });
       }
-    }
+    });
   }
 
   return rows;
@@ -134,8 +145,8 @@ export function flattenSubmissionsToRows(
 
   rows.sort(
     (a, b) =>
-      a.date.localeCompare(b.date) ||
       a.dept.localeCompare(b.dept, "ko") ||
+      a.date.localeCompare(b.date) ||
       a.name.localeCompare(b.name, "ko") ||
       a.start.localeCompare(b.start),
   );
@@ -143,8 +154,63 @@ export function flattenSubmissionsToRows(
   return rows.map((row, index) => ({ ...row, seq: index + 1 }));
 }
 
-export function erpRowToArray(row: ErpSubmissionExcelRow): (string | number)[] {
+export function getErpSubmissionRowKey(row: ErpSubmissionExcelRow): string {
+  return `${row.submissionId}|${row.empno}|${row.name}|${row.slotIndex}|${row.date}`;
+}
+
+export function erpRowToRecordRef(row: ErpSubmissionExcelRow): ErpSubmissionRecordRef {
+  return {
+    submissionId: row.submissionId,
+    empno: row.empno,
+    name: row.name,
+    slotIndex: row.slotIndex,
+    date: row.date,
+  };
+}
+
+export function getErpExcelHeaders(includeSubmitter = false): string[] {
+  const headers = [...ERP_EXCEL_HEADERS];
+  if (!includeSubmitter) {
+    return headers;
+  }
+  const fileIndex = headers.indexOf("파일");
   return [
+    ...headers.slice(0, fileIndex),
+    ERP_SUBMITTER_HEADER,
+    ...headers.slice(fileIndex),
+  ];
+}
+
+export function getErpListTableHeaders(showSubmitter = false): string[] {
+  const headers = ERP_EXCEL_HEADERS.filter((header) => header !== "요일");
+  if (!showSubmitter) {
+    return headers;
+  }
+  const fileIndex = headers.indexOf("파일");
+  if (fileIndex === -1) {
+    return [...headers, ERP_SUBMITTER_HEADER];
+  }
+  return [
+    ...headers.slice(0, fileIndex),
+    ERP_SUBMITTER_HEADER,
+    ...headers.slice(fileIndex),
+  ];
+}
+
+export function formatErpSubmitter(row: ErpSubmissionExcelRow): string {
+  if (row.submittedByName) {
+    return row.submittedByDepartment
+      ? `${row.submittedByName}(${row.submittedByDepartment})`
+      : row.submittedByName;
+  }
+  return row.submittedByDepartment || "-";
+}
+
+export function erpRowToArray(
+  row: ErpSubmissionExcelRow,
+  options?: { includeSubmitter?: boolean },
+): (string | number)[] {
+  const values: (string | number)[] = [
     row.seq,
     row.name,
     row.dept,
@@ -158,8 +224,14 @@ export function erpRowToArray(row: ErpSubmissionExcelRow): (string | number)[] {
     row.nightLabel,
     row.holLabel,
     row.notes,
-    row.file,
   ];
+
+  if (options?.includeSubmitter) {
+    values.push(formatErpSubmitter(row));
+  }
+
+  values.push(row.file);
+  return values;
 }
 
 export function getErpRowStyleFlags(row: ErpSubmissionExcelRow) {
@@ -174,10 +246,15 @@ export function getErpRowStyleFlags(row: ErpSubmissionExcelRow) {
 export async function downloadErpSubmissionExcel(
   rows: ErpSubmissionExcelRow[],
   filename?: string,
+  options?: { includeSubmitter?: boolean },
 ): Promise<void> {
   const XLSX = await import("xlsx-js-style");
-  const dataRows = rows.map(erpRowToArray);
-  const wsData = [ERP_EXCEL_HEADERS.slice(), ...dataRows];
+  const includeSubmitter = options?.includeSubmitter ?? false;
+  const headers = getErpExcelHeaders(includeSubmitter);
+  const dataRows = rows.map((row) =>
+    erpRowToArray(row, { includeSubmitter }),
+  );
+  const wsData = [headers, ...dataRows];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
   ws["!cols"] = [
@@ -194,6 +271,7 @@ export async function downloadErpSubmissionExcel(
     { wch: 14 },
     { wch: 14 },
     { wch: 18 },
+    ...(includeSubmitter ? [{ wch: 16 }] : []),
     { wch: 20 },
   ];
 
@@ -240,7 +318,7 @@ export async function downloadErpSubmissionExcel(
     const row = isHdr ? null : rows[ri - 1];
     const flags = row ? getErpRowStyleFlags(row) : null;
 
-    for (let ci = 0; ci < ERP_EXCEL_HEADERS.length; ci++) {
+    for (let ci = 0; ci < headers.length; ci++) {
       const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
       if (!ws[addr]) {
         ws[addr] = { v: "", t: "s" };

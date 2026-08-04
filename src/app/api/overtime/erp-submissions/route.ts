@@ -97,6 +97,7 @@ export async function GET(request: Request) {
       searchParams.get("overtimeType")?.trim() || undefined,
     );
     const yearMonth = searchParams.get("yearMonth")?.trim() || undefined;
+    const submitterName = searchParams.get("submitterName")?.trim() || undefined;
     const viewScope = getErpSubmissionViewScope(user);
 
     let userId: string | undefined;
@@ -118,6 +119,7 @@ export async function GET(request: Request) {
       yearMonth,
       userId,
       department,
+      submitterName,
       limit: viewScope === "own" ? 50 : 200,
     });
 
