@@ -399,7 +399,7 @@ async function parseHWP(ab, label) {
    PDF 내보내기 (인쇄 다이얼로그 활용)
 ══════════════════════════════════════════════════════════════════ */
 function downloadPDF() {
-  if (!RECORDS.length) { alert('파싱된 데이터가 없습니다.'); return; }
+  if (!RECORDS.length) { void appAlert({ type: 'warning', title: '데이터 없음', message: '파싱된 데이터가 없습니다.' }); return; }
 
   const fl = getF();
   const now = new Date();
@@ -492,7 +492,7 @@ function downloadPDF() {
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const w = window.open(url, '_blank');
-  if (!w) alert('팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.');
+  if (!w) void appAlert({ type: 'warning', title: '팝업 차단', message: '팝업이 차단되었습니다.\n팝업 허용 후 다시 시도해 주세요.' });
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
@@ -540,16 +540,18 @@ function addF(list) {
     hwpFiles.push({ file: f, label });
   }
   if (skipped.length) {
-    alert(`⚠️ HWP 파일만 업로드 가능합니다.\n건너뜀: ${skipped.join(', ')}`);
+    void appAlert({ type: 'warning', title: '파일 형식 안내', message: `HWP 파일만 업로드 가능합니다.\n\n건너뜀: ${skipped.join(', ')}` });
   }
   renderFL();
   updateParseButtons();
 }
 function removeF(i) { hwpFiles.splice(i,1); renderFL(); updateParseButtons(); }
 function clearAll() {
-  if (!confirm('업로드된 파일 목록을 모두 삭제하시겠습니까?')) return;
-  hwpFiles = [];
-  renderFL(); updateParseButtons();
+  appConfirm({ title: '파일 목록 삭제', message: '업로드된 파일 목록을 모두 삭제하시겠습니까?', confirmLabel: '삭제', danger: true }).then(function(ok) {
+    if (!ok) return;
+    hwpFiles = [];
+    renderFL(); updateParseButtons();
+  });
 }
 function updateParseButtons() {
   const canParse = masterLoaded && hwpFiles.length > 0;
@@ -892,7 +894,7 @@ function copyCorrections(ev) {
 
 function downloadErrList(ev) {
   if (ev) ev.stopPropagation();
-  if (!ERR_ROWS.length) { alert('내려받을 오류내역이 없습니다.'); return; }
+  if (!ERR_ROWS.length) { void appAlert({ type: 'info', message: '내려받을 오류내역이 없습니다.' }); return; }
 
   const headers = ['순번', '유형', '상태', '이름', '사번', '날짜', '시간', '권장이름', '권장사번', '근무내용', '위치'];
   const rows = ERR_ROWS.map((r, i) => [
@@ -1328,7 +1330,7 @@ async function makeFixedHwp(ev) {
   const allFixes = document.querySelectorAll('#errList .err-fix');
   const untouched = [...allFixes].filter(b => !b.dataset.touched);
   if (untouched.length > 0) {
-    alert(`아직 검토하지 않은 항목이 ${untouched.length}개 있습니다.\n모든 항목을 펼쳐 올바른 이름/사번을 확인·클릭한 뒤 다운로드해주세요.`);
+    void appAlert({ type: 'warning', title: '검토 필요', message: `아직 검토하지 않은 항목이 ${untouched.length}개 있습니다.\n모든 항목을 펼쳐 올바른 이름/사번을 확인·클릭한 뒤 다운로드해 주세요.` });
     return;
   }
 
@@ -1336,7 +1338,7 @@ async function makeFixedHwp(ev) {
   const hasVChanges = RECORDS.some(r => r.holiday_early !== r._origHol || r.night_work !== r._origNight);
   const hasDeleted = deletedRecords.length > 0;
   if (!rows.length && !hasVChanges && !hasDeleted) {
-    alert('변경할 내용이 없습니다.\n이름/사번 수정, V 체크 변경, 행 삭제 중 하나를 먼저 진행해주세요.');
+    void appAlert({ type: 'info', title: '변경 없음', message: '변경할 내용이 없습니다.\n이름/사번 수정, V 체크 변경, 행 삭제 중 하나를 먼저 진행해 주세요.' });
     return;
   }
   const skipped = [];
@@ -1346,11 +1348,11 @@ async function makeFixedHwp(ev) {
   }
   const active = rows.filter(rf => rf.nameChg || rf.empChg);
   if (!active.length && !hasVChanges && !hasDeleted) {
-    alert('자동 수정 불가: 글자수가 다른 항목뿐입니다.\n(' + skipped.join(', ') + ')\n글자수가 다른 교체는 한글에서 직접 수정해주세요.');
+    void appAlert({ type: 'warning', title: '자동 수정 불가', message: '글자수가 다른 항목뿐입니다.\n(' + skipped.join(', ') + ')\n글자수가 다른 교체는 한글에서 직접 수정해 주세요.' });
     return;
   }
-  if (typeof CFB === 'undefined') { alert('수정 라이브러리(CFB) 로딩 중입니다. 잠시 후 다시 시도해주세요.'); return; }
-  if (!hwpFiles.length) { alert('업로드된 hwp 파일이 없습니다.'); return; }
+  if (typeof CFB === 'undefined') { void appAlert({ type: 'info', message: '수정 라이브러리(CFB) 로딩 중입니다.\n잠시 후 다시 시도해 주세요.' }); return; }
+  if (!hwpFiles.length) { void appAlert({ type: 'warning', message: '업로드된 HWP 파일이 없습니다.' }); return; }
 
   let madeFiles = [], failed = [];
   const outputFiles = [];
@@ -1431,7 +1433,7 @@ async function makeFixedHwp(ev) {
     : '⚠️ 해당 항목이 업로드한 파일에서 발견되지 않았습니다.';
   if (skipped.length) msg += '\n\n※ 글자수가 달라 자동수정 못한 항목(한글에서 직접 수정):\n' + skipped.join(', ');
   if (failed.length) msg += '\n\n❌ 처리 실패:\n' + failed.join('\n');
-  alert(msg);
+  void appAlert({ type: 'success', title: '수정본 생성 완료', message: msg });
 }
 
 function copyErrContent(ev, btn) {
@@ -1442,12 +1444,12 @@ function copyErrContent(ev, btn) {
     const o = btn.textContent;
     btn.textContent = '✅ 복사됨! 한글에서 Ctrl+F로 붙여넣기';
     setTimeout(() => { btn.textContent = o; }, 1600);
-  }).catch(() => alert('복사 실패: 내용을 직접 선택해 복사해주세요.'));
+  }).catch(() => void appAlert({ type: 'error', message: '복사 실패: 내용을 직접 선택해 복사해 주세요.' }));
 }
 
 async function parseAll() {
   if (!masterLoaded) {
-    alert('사원명부(DB)가 연결되지 않았습니다.\n🔄 새로고침으로 다시 불러온 뒤 파싱해 주세요.');
+    void appAlert({ type: 'error', title: '사원명부 연결 실패', message: '사원명부(DB)가 연결되지 않았습니다.\n새로고침으로 다시 불러온 뒤 파싱해 주세요.' });
     return;
   }
   if (!hwpFiles.length) return;
@@ -1461,7 +1463,7 @@ async function parseAll() {
       const recs = await parseHWP(await file.arrayBuffer(), label);
       RECORDS.push(...recs);
     } catch(e) {
-      alert(`❌ ${file.name}\n${e.message}`);
+      void appAlert({ type: 'error', title: '파싱 오류', message: `${file.name}\n${e.message}` });
     }
   }
 
@@ -1669,7 +1671,13 @@ function getInfo(empno){ return masterMap[empno]||masterMap[empno.replace(/^0+/,
 /* ══════════════════════════════════════════════════════════════════
    완료 체크
 ══════════════════════════════════════════════════════════════════ */
-function clearRecords(){if(!confirm('파싱된 목록을 모두 삭제하시겠습니까?'))return;RECORDS=[];render();}
+function clearRecords() {
+  appConfirm({ title: '입력 목록 삭제', message: '파싱된 목록을 모두 삭제하시겠습니까?', confirmLabel: '삭제', danger: true }).then(function(ok) {
+    if (!ok) return;
+    RECORDS = [];
+    render();
+  });
+}
 
 // 휴일조기출근 수동 토글
 function togHol(i) {
@@ -1949,7 +1957,7 @@ async function requireAdmin(callback) {
     _adminUnlocked = true;
     callback();
   } else {
-    alert('비밀번호가 올바르지 않습니다.');
+    void appAlert({ type: 'error', message: '비밀번호가 올바르지 않습니다.' });
   }
 }
 
@@ -1968,7 +1976,7 @@ function saveCMOEvent() {
   const date = document.getElementById('cmoDate').value;
   const type = document.getElementById('cmoType').value;
   const name = document.getElementById('cmoName').value.trim();
-  if (!date || !name) { alert('날짜와 일정명을 입력해주세요.'); return; }
+  if (!date || !name) { void appAlert({ type: 'warning', message: '날짜와 일정명을 입력해 주세요.' }); return; }
   calEvs.push({id:'ce'+Date.now(), date, type, name});
   saveCalEvs(); renderCMOList(); renderCal(); render();
   document.getElementById('cmoName').value = '';
@@ -2004,7 +2012,7 @@ renderCal();
    토스 스타일: 헤더 #3182F6, 짝수행 #EBF3FE, 테두리, 폰트 맑은고딕
 ══════════════════════════════════════════════════════ */
 function downloadExcel() {
-  if (!RECORDS.length) { alert('파싱된 데이터가 없습니다.'); return; }
+  if (!RECORDS.length) { void appAlert({ type: 'warning', title: '데이터 없음', message: '파싱된 데이터가 없습니다.' }); return; }
 
   const DAY_KR = ['일','월','화','수','목','금','토'];
   const typeLabel = { normal:'일반시간외', holiday:'휴일조기출근' };
@@ -2399,6 +2407,16 @@ async function saveErpSubmissionToDb(payload) {
   return data;
 }
 
+function resetAfterErpSubmit() {
+  RECORDS = [];
+  deletedRecords = [];
+  hwpFiles = [];
+  document.getElementById('fFile').innerHTML = '<option value="">전체 파일</option>';
+  renderFL();
+  updateParseButtons();
+  render();
+}
+
 async function doDownloadERPExcel() {
   closeWarnModal();
   // ── 연월 결정 (파싱 데이터 있으면 첫 레코드 기준, 없으면 현재 월) ──
@@ -2453,16 +2471,17 @@ async function doDownloadERPExcel() {
   }
 
   if (!personBlocks.length) {
-    alert('저장할 데이터가 없습니다.');
+    void appAlert({ type: 'warning', title: '저장 불가', message: '저장할 데이터가 없습니다.' });
     return;
   }
 
   const payload = serializeErpPayload(yr, mo, dates, personBlocks);
   try {
     await saveErpSubmissionToDb(payload);
-    alert('ERP 양식이 저장되었습니다.');
+    resetAfterErpSubmit();
+    await appAlert({ type: 'success', title: 'ERP 제출 완료', message: 'ERP 제출이 완료되었습니다.\n\n입력 목록이 초기화되었습니다.' });
   } catch (e) {
-    alert('ERP 양식 저장 실패: ' + e.message);
+    await appAlert({ type: 'error', title: 'ERP 저장 실패', message: String(e.message || e) });
   }
 }
 
@@ -2495,10 +2514,17 @@ function getOverlapSet() {
 
 function deleteRec(i) {
   const r = RECORDS[i];
-  if (!confirm(`${r.name} (${r.date}) 행을 삭제하시겠습니까?\n\n수정본 다운로드 시 해당 행이 빈 칸으로 처리됩니다.`)) return;
-  deletedRecords.push({ origName: r.name, origEmp: r.empno, date: r.date, file: r.file });
-  RECORDS.splice(i, 1);
-  render();
+  appConfirm({
+    title: '행 삭제',
+    message: `${r.name} (${r.date}) 행을 삭제하시겠습니까?\n\n수정본 다운로드 시 해당 행이 빈 칸으로 처리됩니다.`,
+    confirmLabel: '삭제',
+    danger: true,
+  }).then(function(ok) {
+    if (!ok) return;
+    deletedRecords.push({ origName: r.name, origEmp: r.empno, date: r.date, file: r.file });
+    RECORDS.splice(i, 1);
+    render();
+  });
 }
 
 function render(){

@@ -9,6 +9,8 @@ import {
   labelClassName,
 } from "@/components/admin/form-styles";
 import type { Role } from "@/lib/types";
+import { AppDialog } from "@/components/ui/app-dialog";
+import { useAppDialog } from "@/hooks/use-app-dialog";
 
 interface RoleWithCount extends Role {
   userCount: number;
@@ -38,6 +40,7 @@ export function RoleManagementPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const { confirm, dialogProps } = useAppDialog();
 
   async function loadRoles() {
     setLoading(true);
@@ -132,7 +135,13 @@ export function RoleManagementPanel() {
   }
 
   async function handleDelete(code: string, name: string) {
-    if (!window.confirm(`"${name}" 역할을 삭제하시겠습니까?`)) {
+    const confirmed = await confirm({
+      title: "역할 삭제",
+      message: `"${name}" 역할을 삭제하시겠습니까?`,
+      confirmLabel: "삭제",
+      danger: true,
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -158,6 +167,8 @@ export function RoleManagementPanel() {
   }
 
   return (
+    <>
+    <AppDialog {...dialogProps} />
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-4 text-base font-semibold text-[#004b87]">
@@ -342,5 +353,6 @@ export function RoleManagementPanel() {
         )}
       </section>
     </div>
+    </>
   );
 }

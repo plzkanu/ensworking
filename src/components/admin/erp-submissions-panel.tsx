@@ -23,6 +23,8 @@ import {
   getErpSubmissionRowKey,
 } from "@/lib/erp-submission-rows";
 import type { ErpSubmission } from "@/lib/types";
+import { AppDialog } from "@/components/ui/app-dialog";
+import { useAppDialog } from "@/hooks/use-app-dialog";
 
 const filterButtonOutlineClassName =
   "shrink-0 rounded-lg border border-[#004b87] px-4 py-2 text-sm font-semibold text-[#004b87] transition hover:bg-[#004b87]/5 disabled:cursor-not-allowed disabled:opacity-40";
@@ -32,7 +34,6 @@ export function ErpSubmissionsPanel() {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [overtimeType, setOvertimeType] = useState("");
   const [yearMonth, setYearMonth] = useState("");
   const [department, setDepartment] = useState("");
@@ -47,6 +48,7 @@ export function ErpSubmissionsPanel() {
     ERP_LIST_DEFAULT_PAGE_SIZE,
   );
   const [listPage, setListPage] = useState(1);
+  const { confirm, alert, dialogProps } = useAppDialog();
 
   const resultRows = useMemo(
     () => flattenSubmissionsToRows(submissions),
@@ -68,7 +70,6 @@ export function ErpSubmissionsPanel() {
   ) {
     if (!options?.silent) {
       setLoading(true);
-      setSuccess("");
     }
     setError("");
     try {
@@ -148,17 +149,18 @@ export function ErpSubmissionsPanel() {
       return;
     }
 
-    if (
-      !window.confirm(
-        `선택한 ${selectedRows.length}건의 근무 기록을 삭제하시겠습니까?\n삭제 내용은 ERP 양식에도 반영됩니다.`,
-      )
-    ) {
+    const confirmed = await confirm({
+      title: "선택 삭제",
+      message: `선택한 ${selectedRows.length}건의 근무 기록을 삭제하시겠습니까?\n삭제 내용은 ERP 양식에도 반영됩니다.`,
+      confirmLabel: "삭제",
+      danger: true,
+    });
+    if (!confirmed) {
       return;
     }
 
     setDeleting(true);
     setError("");
-    setSuccess("");
     const recordRefs = selectedRows.map((row) => erpRowToRecordRef(row));
     try {
       const response = await fetch("/api/overtime/erp-submissions/delete-records", {
@@ -178,14 +180,20 @@ export function ErpSubmissionsPanel() {
       setSubmissions((prev) => applyDeletionsToSubmissions(prev, recordRefs));
       setSelectedRowKeys(new Set());
       setListPage(1);
-      setSuccess(`${data.deletedRecords ?? selectedRows.length}건 삭제되었습니다.`);
       try {
         await loadSubmissions(undefined, { silent: true });
       } catch {
         // 삭제는 완료됐고 목록은 위 optimistic update 반영 — 재조회 실패는 무시
       }
+      await alert(`${data.deletedRecords ?? selectedRows.length}건 삭제되었습니다.`, {
+        type: "success",
+        title: "삭제 완료",
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "삭제 실패");
+      await alert(err instanceof Error ? err.message : "삭제 실패", {
+        type: "error",
+        title: "삭제 실패",
+      });
     } finally {
       setDeleting(false);
     }
@@ -210,6 +218,8 @@ export function ErpSubmissionsPanel() {
       : `제출 ${submissions.length}건 · 근무기록 ${resultRows.length}건`;
 
   return (
+    <>
+    <AppDialog {...dialogProps} />
     <div className="space-y-4">
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-nowrap items-end gap-3 overflow-x-auto">
@@ -312,9 +322,6 @@ export function ErpSubmissionsPanel() {
       {error ? (
         <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
       ) : null}
-      {success ? (
-        <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700">{success}</p>
-      ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-600">{summaryText}</p>
@@ -381,5 +388,6 @@ export function ErpSubmissionsPanel() {
         />
       )}
     </div>
+    </>
   );
 }

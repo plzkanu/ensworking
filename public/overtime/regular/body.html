@@ -119,6 +119,18 @@
     </div>
   </div>
 
+  <!-- 공통 알림/확인 다이얼로그 -->
+  <div class="cmo" id="appDialog" style="display:none" onclick="if(event.target===this)closeAppDialog(false)">
+    <div class="app-dialog-box" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle">
+      <div class="app-dialog-head">
+        <div class="app-dialog-icon" id="appDialogIcon">i</div>
+        <h4 id="appDialogTitle">안내</h4>
+      </div>
+      <div class="app-dialog-body" id="appDialogMessage"></div>
+      <div class="app-dialog-actions" id="appDialogActions"></div>
+    </div>
+  </div>
+
   <!-- 달력 모달 -->
   <div class="cmo" id="cmo" style="display:none" onclick="if(event.target===this)closeCMO()">
     <div class="cmo-box">

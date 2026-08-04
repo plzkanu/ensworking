@@ -9,6 +9,8 @@ import {
   labelClassName,
 } from "@/components/admin/form-styles";
 import type { Role, UserPublic } from "@/lib/types";
+import { AppDialog } from "@/components/ui/app-dialog";
+import { useAppDialog } from "@/hooks/use-app-dialog";
 
 interface RoleOption {
   code: string;
@@ -64,6 +66,7 @@ export function UserManagementPanel() {
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [importResults, setImportResults] = useState<ImportResultItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { confirm, dialogProps } = useAppDialog();
 
   async function loadData() {
     setLoading(true);
@@ -193,11 +196,13 @@ export function UserManagementPanel() {
   }
 
   async function handleResetPassword(id: string, name: string) {
-    if (
-      !window.confirm(
-        `"${name}" 사용자의 비밀번호를 "${id}!!"로 초기화하시겠습니까?\n다음 로그인 시 비밀번호 변경이 필요합니다.`,
-      )
-    ) {
+    const confirmed = await confirm({
+      title: "비밀번호 초기화",
+      message: `"${name}" 사용자의 비밀번호를 "${id}!!"로 초기화하시겠습니까?\n다음 로그인 시 비밀번호 변경이 필요합니다.`,
+      confirmLabel: "초기화",
+      danger: true,
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -226,7 +231,13 @@ export function UserManagementPanel() {
   }
 
   async function handleDelete(id: string, name: string) {
-    if (!window.confirm(`"${name}" 사용자를 삭제하시겠습니까?`)) {
+    const confirmed = await confirm({
+      title: "사용자 삭제",
+      message: `"${name}" 사용자를 삭제하시겠습니까?`,
+      confirmLabel: "삭제",
+      danger: true,
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -309,6 +320,8 @@ export function UserManagementPanel() {
   }
 
   return (
+    <>
+    <AppDialog {...dialogProps} />
     <div className="space-y-6">
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 text-base font-semibold text-[#004b87]">
@@ -600,5 +613,6 @@ export function UserManagementPanel() {
       </section>
       </div>
     </div>
+    </>
   );
 }

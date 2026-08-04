@@ -7,6 +7,11 @@ import {
   createErpSubmission,
   listErpSubmissions,
 } from "@/lib/erp-submission-store";
+import {
+  collectRecordFingerprints,
+  findDuplicateRecords,
+  formatDuplicateRecordsMessage,
+} from "@/lib/erp-submission-duplicates";
 import { listDistinctDepartments } from "@/lib/users-store";
 import type { ErpSubmissionPayload, OvertimeType } from "@/lib/types";
 
@@ -68,8 +73,33 @@ export async function POST(request: Request) {
     };
 
     const payload = validatePayload(body);
+    const overtimeType = parseOvertimeType(body.overtimeType!)!;
+
+    const existingSubmissions = await listErpSubmissions({
+      overtimeType,
+      yearMonth: payload.yearMonth,
+      userId: user.id,
+      limit: 100,
+    });
+
+    const incomingRecords = collectRecordFingerprints(payload);
+    const duplicateRecords = findDuplicateRecords(
+      incomingRecords,
+      existingSubmissions.map((submission) => submission.payload),
+    );
+
+    if (duplicateRecords.length > 0) {
+      return NextResponse.json(
+        {
+          error: formatDuplicateRecordsMessage(duplicateRecords),
+          duplicateCount: duplicateRecords.length,
+        },
+        { status: 409 },
+      );
+    }
+
     const submission = await createErpSubmission({
-      overtimeType: parseOvertimeType(body.overtimeType!)!,
+      overtimeType,
       userId: user.id,
       userName: user.name,
       department: user.department,
