@@ -2,6 +2,14 @@ import type { SessionUser } from "./types";
 
 const SESSION_COOKIE = "ens_overtime_session";
 
+/** 브라우저를 닫으면 만료되는 세션 쿠키 (maxAge/expires 미설정) */
+export const sessionCookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+};
+
 function getAuthSecret() {
   return process.env.AUTH_SECRET ?? "dev-secret-change-in-production";
 }

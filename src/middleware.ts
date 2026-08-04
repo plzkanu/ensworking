@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { sessionCookieOptions } from "@/lib/session-token";
 import { parseSessionToken, SESSION_COOKIE } from "@/lib/session-token";
 
 function getOvertimeTypeFromPath(pathname: string): "regular" | "flexible" | null {
@@ -27,7 +28,7 @@ export async function middleware(request: NextRequest) {
   const user = await parseSessionToken(token);
   if (!user) {
     const response = NextResponse.redirect(new URL("/login", request.url));
-    response.cookies.delete(SESSION_COOKIE);
+    response.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOptions, maxAge: 0 });
     return response;
   }
 

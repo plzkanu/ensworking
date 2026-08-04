@@ -4,18 +4,11 @@ import {
   createSessionToken,
   parseSessionToken,
   SESSION_COOKIE,
+  sessionCookieOptions,
 } from "./session-token";
 import type { SessionUser } from "./types";
 
-const SESSION_MAX_AGE = 60 * 60 * 8;
-
-export const sessionCookieOptions = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
-  path: "/",
-  maxAge: SESSION_MAX_AGE,
-};
+export { sessionCookieOptions };
 
 export async function attachSessionCookie(
   response: NextResponse,
@@ -26,9 +19,14 @@ export async function attachSessionCookie(
   return response;
 }
 
-export async function clearSessionCookie() {
+export async function clearSessionCookie(response?: NextResponse) {
+  const expired = { ...sessionCookieOptions, maxAge: 0 };
+  if (response) {
+    response.cookies.set(SESSION_COOKIE, "", expired);
+    return response;
+  }
   const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE);
+  cookieStore.set(SESSION_COOKIE, "", expired);
 }
 
 export async function getSessionUser(): Promise<SessionUser | null> {
