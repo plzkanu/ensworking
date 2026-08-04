@@ -5,7 +5,12 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
 import { SoosanLogo } from "@/components/soosan-logo";
-import { isAdminNavPath, mainNavItems, type NavItem } from "@/lib/nav";
+import {
+  isAdminNavPath,
+  isFeedbackNavPath,
+  isNavGroupActive,
+  mainNavItems,
+} from "@/lib/nav";
 import type { SessionUser } from "@/lib/types";
 
 interface AppSidebarProps {
@@ -19,11 +24,21 @@ function isNavActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function isItemActive(pathname: string, item: NavItem) {
-  if (item.href) {
-    return isNavActive(pathname, item.href);
+function buildInitialOpenGroups(pathname: string): Record<string, boolean> {
+  const open: Record<string, boolean> = {};
+  for (const item of mainNavItems) {
+    if (!item.children) {
+      continue;
+    }
+    if (item.label === "관리자") {
+      open[item.label] = isAdminNavPath(pathname);
+    } else if (item.label === "프로그램 의견 접수") {
+      open[item.label] = isFeedbackNavPath(pathname);
+    } else {
+      open[item.label] = isNavGroupActive(pathname, item);
+    }
   }
-  return item.children?.some((child) => isNavActive(pathname, child.href)) ?? false;
+  return open;
 }
 
 export function AppSidebar({ user }: AppSidebarProps) {
@@ -32,13 +47,28 @@ export function AppSidebar({ user }: AppSidebarProps) {
     (item) => !item.adminOnly || user.role === "admin",
   );
   const initial = user.name.trim().charAt(0) || user.id.charAt(0);
-  const [adminOpen, setAdminOpen] = useState(() => isAdminNavPath(pathname));
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
+    buildInitialOpenGroups(pathname),
+  );
 
   useEffect(() => {
-    if (isAdminNavPath(pathname)) {
-      setAdminOpen(true);
-    }
+    setOpenGroups((prev) => {
+      const next = { ...prev };
+      for (const item of mainNavItems) {
+        if (!item.children) {
+          continue;
+        }
+        if (isNavGroupActive(pathname, item)) {
+          next[item.label] = true;
+        }
+      }
+      return next;
+    });
   }, [pathname]);
+
+  function toggleGroup(label: string) {
+    setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] }));
+  }
 
   return (
     <aside className="fixed top-0 left-0 z-[100] flex h-screen w-[220px] flex-col bg-[#0F2645]">
@@ -60,12 +90,13 @@ export function AppSidebar({ user }: AppSidebarProps) {
         <ul className="px-2">
           {items.map((item) => {
             if (item.children) {
-              const groupActive = isItemActive(pathname, item);
+              const groupActive = isNavGroupActive(pathname, item);
+              const isOpen = openGroups[item.label] ?? false;
               return (
                 <li key={item.label}>
                   <button
                     type="button"
-                    onClick={() => setAdminOpen((open) => !open)}
+                    onClick={() => toggleGroup(item.label)}
                     className={`relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] transition ${
                       groupActive
                         ? "bg-[#1E5FD4]/25 font-medium text-white"
@@ -82,12 +113,12 @@ export function AppSidebar({ user }: AppSidebarProps) {
                     <span className="flex-1 text-left">{item.label}</span>
                     <span
                       aria-hidden
-                      className={`text-[10px] transition ${adminOpen ? "rotate-90" : ""}`}
+                      className={`text-[10px] transition ${isOpen ? "rotate-90" : ""}`}
                     >
                       ▶
                     </span>
                   </button>
-                  {adminOpen ? (
+                  {isOpen ? (
                     <ul className="mb-1 ml-3 border-l border-white/10 pl-2">
                       {item.children.map((child) => {
                         const active = isNavActive(pathname, child.href);

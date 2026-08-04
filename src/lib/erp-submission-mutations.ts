@@ -88,3 +88,24 @@ export function buildUpdatedSubmissionAfterDelete(
     recordCount: countPayloadRecords(payload.personBlocks),
   };
 }
+
+export function applyDeletionsToSubmissions(
+  submissions: ErpSubmission[],
+  refs: ErpSubmissionRecordRef[],
+): ErpSubmission[] {
+  if (refs.length === 0) {
+    return submissions;
+  }
+
+  const affectedIds = new Set(refs.map((ref) => ref.submissionId));
+  return submissions.flatMap((submission) => {
+    if (!affectedIds.has(submission.id)) {
+      return [submission];
+    }
+    const updated = buildUpdatedSubmissionAfterDelete(submission, refs);
+    if (!updated) {
+      return [];
+    }
+    return [{ ...submission, ...updated }];
+  });
+}

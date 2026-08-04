@@ -10,6 +10,8 @@ import {
 import { listDistinctDepartments } from "@/lib/users-store";
 import type { ErpSubmissionPayload, OvertimeType } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
+
 function parseOvertimeType(value: string | undefined): OvertimeType | null {
   if (value === "regular" || value === "flexible") {
     return value;

@@ -15,6 +15,7 @@ import {
   type ErpFormVersion,
 } from "@/lib/erp-form-versions";
 import { buildErpPivotModel, downloadErpPivotExcel } from "@/lib/erp-submission-pivot";
+import { applyDeletionsToSubmissions } from "@/lib/erp-submission-mutations";
 import {
   downloadErpSubmissionExcel,
   erpRowToRecordRef,
@@ -31,6 +32,7 @@ export function ErpSubmissionsPanel() {
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [overtimeType, setOvertimeType] = useState("");
   const [yearMonth, setYearMonth] = useState("");
   const [department, setDepartment] = useState("");
@@ -55,13 +57,19 @@ export function ErpSubmissionsPanel() {
     [submissions, yearMonth],
   );
 
-  async function loadSubmissions(filters?: {
-    overtimeType?: string;
-    yearMonth?: string;
-    department?: string;
-    submitterName?: string;
-  }) {
-    setLoading(true);
+  async function loadSubmissions(
+    filters?: {
+      overtimeType?: string;
+      yearMonth?: string;
+      department?: string;
+      submitterName?: string;
+    },
+    options?: { silent?: boolean },
+  ) {
+    if (!options?.silent) {
+      setLoading(true);
+      setSuccess("");
+    }
     setError("");
     try {
       const params = new URLSearchParams();
@@ -74,7 +82,10 @@ export function ErpSubmissionsPanel() {
       if (dept) params.set("department", dept);
       if (submitter.trim()) params.set("submitterName", submitter.trim());
 
-      const response = await fetch(`/api/overtime/erp-submissions?${params.toString()}`);
+      const response = await fetch(
+        `/api/overtime/erp-submissions?${params.toString()}`,
+        { cache: "no-store" },
+      );
       const data = (await response.json()) as {
         submissions?: ErpSubmission[];
         viewScope?: ErpSubmissionViewScope;
@@ -100,7 +111,9 @@ export function ErpSubmissionsPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "데이터 로드 실패");
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }
 
@@ -145,21 +158,32 @@ export function ErpSubmissionsPanel() {
 
     setDeleting(true);
     setError("");
+    setSuccess("");
+    const recordRefs = selectedRows.map((row) => erpRowToRecordRef(row));
     try {
       const response = await fetch("/api/overtime/erp-submissions/delete-records", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          records: selectedRows.map((row) => erpRowToRecordRef(row)),
-        }),
+        body: JSON.stringify({ records: recordRefs }),
+        cache: "no-store",
       });
-      const data = (await response.json()) as { error?: string };
+      const data = (await response.json()) as {
+        error?: string;
+        deletedRecords?: number;
+      };
       if (!response.ok) {
         throw new Error(data.error ?? "삭제에 실패했습니다.");
       }
 
+      setSubmissions((prev) => applyDeletionsToSubmissions(prev, recordRefs));
       setSelectedRowKeys(new Set());
-      await loadSubmissions();
+      setListPage(1);
+      setSuccess(`${data.deletedRecords ?? selectedRows.length}건 삭제되었습니다.`);
+      try {
+        await loadSubmissions(undefined, { silent: true });
+      } catch {
+        // 삭제는 완료됐고 목록은 위 optimistic update 반영 — 재조회 실패는 무시
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "삭제 실패");
     } finally {
@@ -287,6 +311,9 @@ export function ErpSubmissionsPanel() {
 
       {error ? (
         <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+      ) : null}
+      {success ? (
+        <p className="rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700">{success}</p>
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">

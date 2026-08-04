@@ -230,7 +230,7 @@ function extractRecs(texts, cellAtIdx, label) {
   };
   const TM    = /^\d{2}:\d{2}$/;
   const HR    = /^\d+(\.\d)?$/;
-  const isCheck = tok => tok === 'V' || tok === 'v' || tok === 'Ｖ' || tok === '√' || tok === '✓' || tok === '☑';
+  const isCheck = tok => !!(tok || '').trim();
 
   const NUM_COLS = 10; // 근무일지 표 열 수
   const recs  = [];
@@ -290,41 +290,54 @@ function extractRecs(texts, cellAtIdx, label) {
     if (!HR.test(hours))  continue;
     if (!name || name.length < 2) continue;
 
-    // 평일야간(tok7), 휴일조기(tok8) — 순번 없는 경우 offset이 1씩 앞당겨짐
+    // 평일야간(+6), 휴일조기(+7) — 빈 셀 생략 시 cellAtIdx로 실제 열 위치 판별
     const off = noSeq ? 6 : 7;
-    const tok7 = (texts[i+off]   || '').trim();
-    const tok8 = (texts[i+off+1] || '').trim();
+    const nameIdx = noSeq ? i : i + 1;
+    const nameCellI = cellAtIdx[nameIdx] || 0;
 
     const isNextSeq = t => !noSeq && SEQ.test(t) && parseInt(t) === seq + 1;
     const isDate    = t => !!normDate(t);
+    const colDiff   = idx => {
+      const c = cellAtIdx[idx] || 0;
+      return (nameCellI && c) ? c - nameCellI : null;
+    };
 
-    // V가 tok7 하나만 있을 때: 빈 셀 생략으로 평일야간(7)과 휴일조기(8) 구분 불가.
-    // cellAtIdx 기반으로 V가 있는 실제 셀 번호를 확인 → name 기준 +6=평일야간, +7=휴일조기
-    let nightWork, holidayEarly;
-    const bothV = isCheck(tok7) && isCheck(tok8);
-    const onlyV = isCheck(tok7) && !isCheck(tok8) && !isNextSeq(tok7) && !isDate(tok7);
-    if (bothV) {
-      nightWork = true; holidayEarly = true;
-    } else if (onlyV) {
-      const nameIdx   = noSeq ? i : i + 1;
-      const nameCellI = cellAtIdx[nameIdx] || 0;
-      const vCellI    = cellAtIdx[i + off] || 0;
-      if (nameCellI && vCellI) {
-        // cellAtIdx로 어느 열인지 정확히 판별
-        const diff = vCellI - nameCellI;
-        if (diff === 7) { holidayEarly = true;  nightWork = false; }      // 조기(name+7)
-        else            { nightWork    = true;   holidayEarly = false; }  // 야간(name+6) 또는 불명확
-      } else {
-        // cellAtIdx 없을 때 휴일/주말 휴리스틱 유지
+    let nightWork = false, holidayEarly = false;
+    let contentIdx = i + off;
+
+    if (nameCellI) {
+      for (let j = 0; j < 2; j++) {
+        const idx = i + off + j;
+        if (idx >= texts.length) break;
+        const tok = (texts[idx] || '').trim();
+        const diff = colDiff(idx);
+        if (diff !== 6 && diff !== 7) break;
+        contentIdx = idx + 1;
+        if (isCheck(tok) && !isNextSeq(tok) && !isDate(tok)) {
+          if (diff === 6) nightWork = true;
+          if (diff === 7) holidayEarly = true;
+        }
+      }
+    } else {
+      const tok7 = (texts[i+off]   || '').trim();
+      const tok8 = (texts[i+off+1] || '').trim();
+      const bothV = isCheck(tok7) && isCheck(tok8);
+      const onlyV = isCheck(tok7) && !isCheck(tok8) && !isNextSeq(tok7) && !isDate(tok7);
+      if (bothV) {
+        nightWork = true; holidayEarly = true;
+        contentIdx = i + off + 2;
+      } else if (onlyV) {
         const dow = date ? new Date(date).getDay() : -1;
         const isWeekend = dow === 0 || dow === 6;
         const isHoliday = !!(HOLIDAYS[date] || getCustomHolidays()[date]);
         holidayEarly = isWeekend || isHoliday;
         nightWork    = !holidayEarly;
+        contentIdx = i + off + 1;
+      } else {
+        nightWork    = !isNextSeq(tok7) && !isDate(tok7) && isCheck(tok7);
+        holidayEarly = !isNextSeq(tok8) && !isDate(tok8) && isCheck(tok8);
+        contentIdx = i + off + (nightWork && holidayEarly ? 2 : (nightWork || holidayEarly ? 1 : 0));
       }
-    } else {
-      nightWork    = !isNextSeq(tok7) && !isDate(tok7) && isCheck(tok7);
-      holidayEarly = !isNextSeq(tok8) && !isDate(tok8) && isCheck(tok8);
     }
 
     if (currentPage === 0) currentPage = 1;
@@ -332,8 +345,7 @@ function extractRecs(texts, cellAtIdx, label) {
     const _cellAtIdx = cellAtIdx[i] || 0;
     const _rowNo = Math.ceil(_cellAtIdx / NUM_COLS) - 1;
 
-    const vCount = bothV ? 2 : (onlyV ? 1 : 0);
-    let content = (texts[i + off + vCount] || '').trim();
+    let content = (texts[contentIdx] || '').trim();
     if (content === PAGE_BREAK_TOKEN || SEQ.test(content) || EMP.test(content) || normDate(content)) content = '';
 
     const hrsVal = parseFloat(hours);
@@ -680,7 +692,8 @@ function splitRecord(r) {
           holiday_early: r.holiday_early, night_work: r.night_work,
           _split: true, _splitIdx: 0, _splitTotal: 2 },
         { ...r, start: toHHMM(seg2Start), end: toHHMM(seg2End), hours: seg2Hours,
-          holiday_early: false, night_work: false,
+          holiday_early: r.holiday_early, night_work: r.night_work,
+          _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 1, _splitTotal: 2 },
       ];
     }
@@ -710,8 +723,8 @@ function splitRecord(r) {
           _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 0, _splitTotal: 2 },
         { ...r, start: toHHMM(seg2Start), end: r.end, hours: afternoonH,
-          holiday_early: false, night_work: false,
-          _origHol: false, _origNight: false,
+          holiday_early: r.holiday_early, night_work: r.night_work,
+          _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 1, _splitTotal: 2 },
       ];
     }
@@ -772,8 +785,8 @@ function splitRecord(r) {
 
   const lastIdx = segments.length - 1;
   return segments.map((seg, idx) => {
-    const hol   = idx === 0 ? r.holiday_early : false;
-    const night = idx === 0 ? r.night_work    : false;
+    const hol   = r.holiday_early;
+    const night = r.night_work;
     return {
       ...r,
       // 바깥 경계(첫 조각 시작 / 마지막 조각 종료)는 원래 시각 문자열을 그대로 유지.
@@ -783,7 +796,7 @@ function splitRecord(r) {
       hours: Math.round((seg.e - seg.s) / 60 * 10) / 10,
       holiday_early: hol,
       night_work:    night,
-      _origHol:   hol,    // holiday_early와 항상 일치 유지
+      _origHol:   hol,
       _origNight: night,
       _split: true,
       _splitIdx: idx,
@@ -2025,8 +2038,8 @@ function downloadExcel() {
     ].filter(Boolean);
     const notes = noteParts.join(' / ');
 
-    const holLabel  = hol ? (holWrong ? '체크(확인필요)' : '체크') : (holMissing ? '미체크(누락가능)' : '');
-    const nightLabel = night ? '체크(확인필요)' : '';
+    const holLabel  = hol ? '체크' : (holMissing ? '미체크(누락가능)' : '');
+    const nightLabel = night ? '체크' : '';
     const type = isHoliday ? '휴일시간외' : '평일시간외';
 
     return [
@@ -2116,10 +2129,10 @@ function downloadExcel() {
       const isHdr  = ri === 0;
       const isEven = !isHdr && ri % 2 === 0;
       const row    = isHdr ? null : rows[ri - 1];
-      // col 10=평일야간출근, col 11=휴일조기출근, col 9=근무유형
-      const isHolWarn  = row && (row[10] || '').includes('확인필요');
-      const isHolMiss  = row && (row[10] || '').includes('누락가능');
-      const isNight    = row && !!(row[11]);
+      // col 10=평일야간출근, col 11=휴일조기출근, col 12=비고, col 9=근무유형
+      const isNight    = row && String(row[10] || '').includes('체크');
+      const isHolMiss  = row && String(row[11] || '').includes('누락가능');
+      const isHolWarn  = row && String(row[12] || '').includes('오체크');
       const isHolidayRow = row && row[9] === '휴일시간외';
 
       // fill
@@ -2132,9 +2145,9 @@ function downloadExcel() {
       // font
       let font = font_base;
       if (isHdr) font = font_hdr;
-      else if (ci === 11 && isNight)   font = font_night;
-      else if (ci === 10 && isHolWarn) font = font_warn;
-      else if (ci === 10 && isHolMiss) font = { ...font_warn, color:{ rgb:'F04452' } };
+      else if (ci === 10 && isNight)   font = font_night;
+      else if (ci === 11 && isHolWarn) font = font_warn;
+      else if (ci === 11 && isHolMiss) font = { ...font_warn, color:{ rgb:'F04452' } };
       else if (ci === 9 && isHolidayRow) font = font_hol;
       else if (ci === 5) {
         const dayV = String(wsData[ri][ci]);

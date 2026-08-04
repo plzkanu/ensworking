@@ -91,13 +91,11 @@ function buildRowLabels(
   ].filter(Boolean);
 
   const holLabel = hol
-    ? holWrong
-      ? "체크(확인필요)"
-      : "체크"
+    ? "체크"
     : holMissing
       ? "미체크(누락가능)"
       : "";
-  const nightLabel = night ? "체크(확인필요)" : "";
+  const nightLabel = night ? "체크" : "";
 
   return {
     workType: isHoliday ? "휴일시간외" : "평일시간외",
@@ -237,7 +235,7 @@ export function erpRowToArray(
 export function getErpRowStyleFlags(row: ErpSubmissionExcelRow) {
   const isHolidayRow = row.workType === "휴일시간외";
   const isNight = !!row.nightLabel;
-  const isHolWarn = row.holLabel.includes("확인필요");
+  const isHolWarn = row.notes.includes("오체크");
   const isHolMiss = row.holLabel.includes("누락가능");
 
   return { isHolidayRow, isNight, isHolWarn, isHolMiss };

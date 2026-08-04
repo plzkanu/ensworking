@@ -79,9 +79,14 @@ function insecureHttpsFetch(
             const chunks: Buffer[] = [];
             res.on("data", (chunk: Buffer) => chunks.push(chunk));
             res.on("end", () => {
+              const statusCode = res.statusCode ?? 500;
+              // 204/205/304 must not carry a body — otherwise Response() throws and
+              // uncaughtException kills the API route (client sees "Failed to fetch").
+              const nullBody =
+                statusCode === 204 || statusCode === 205 || statusCode === 304;
               resolve(
-                new Response(Buffer.concat(chunks), {
-                  status: res.statusCode ?? 500,
+                new Response(nullBody ? null : Buffer.concat(chunks), {
+                  status: statusCode,
                   statusText: res.statusMessage,
                   headers: res.headers as HeadersInit,
                 }),

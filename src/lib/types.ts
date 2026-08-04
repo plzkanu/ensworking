@@ -89,6 +89,22 @@ export interface AdminChangeLogEntry {
   createdAt: string;
 }
 
+export interface ProgramFeedbackEntry {
+  id: string;
+  userId: string;
+  userName: string;
+  userDepartment: string;
+  category: string;
+  title: string;
+  content: string;
+  status: string;
+  adminResponse: string;
+  adminId: string;
+  adminName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type OvertimeType = "regular" | "flexible";
 
 export interface ErpSubmissionDayEntry {

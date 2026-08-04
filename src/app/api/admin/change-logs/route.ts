@@ -26,6 +26,8 @@ export async function GET(request: Request) {
   }
 }
 
+// GET is also available at /api/change-logs for all authenticated users.
+
 export async function POST(request: Request) {
   const auth = await requireAdminSession();
   if ("error" in auth) return auth.error;

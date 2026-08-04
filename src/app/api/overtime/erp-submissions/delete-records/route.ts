@@ -9,6 +9,8 @@ import {
   updateErpSubmission,
 } from "@/lib/erp-submission-store";
 
+export const dynamic = "force-dynamic";
+
 function parseRecordRefs(body: unknown): ErpSubmissionRecordRef[] {
   if (
     !body ||
