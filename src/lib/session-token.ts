@@ -1,6 +1,9 @@
 import type { SessionUser } from "./types";
 
-const SESSION_COOKIE = "ens_overtime_session";
+export const SESSION_COOKIE = "ens_session";
+
+/** maxAge가 있던 이전 쿠키 — 배포 후 자동 무효화 */
+export const LEGACY_SESSION_COOKIES = ["ens_overtime_session"] as const;
 
 /** 브라우저를 닫으면 만료되는 세션 쿠키 (maxAge/expires 미설정) */
 export const sessionCookieOptions = {
@@ -9,6 +12,27 @@ export const sessionCookieOptions = {
   sameSite: "lax" as const,
   path: "/",
 };
+
+export function expireLegacySessionCookies(response: {
+  cookies: {
+    set: (
+      name: string,
+      value: string,
+      options: { path: string; maxAge: number; httpOnly?: boolean; secure?: boolean; sameSite?: "lax" | "strict" | "none" },
+    ) => void;
+  };
+}) {
+  const expired = {
+    path: "/",
+    maxAge: 0,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+  };
+  for (const name of LEGACY_SESSION_COOKIES) {
+    response.cookies.set(name, "", expired);
+  }
+}
 
 function getAuthSecret() {
   return process.env.AUTH_SECRET ?? "dev-secret-change-in-production";
@@ -109,5 +133,3 @@ export async function parseSessionToken(
     return null;
   }
 }
-
-export { SESSION_COOKIE };

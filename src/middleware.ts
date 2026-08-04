@@ -1,7 +1,16 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { sessionCookieOptions } from "@/lib/session-token";
-import { parseSessionToken, SESSION_COOKIE } from "@/lib/session-token";
+import {
+  expireLegacySessionCookies,
+  parseSessionToken,
+  SESSION_COOKIE,
+  sessionCookieOptions,
+} from "@/lib/session-token";
+
+function withLegacyCookieCleanup(response: NextResponse) {
+  expireLegacySessionCookies(response);
+  return response;
+}
 
 function getOvertimeTypeFromPath(pathname: string): "regular" | "flexible" | null {
   if (pathname.startsWith("/overtime/regular")) {
@@ -17,18 +26,21 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (!pathname.startsWith("/overtime/")) {
-    return NextResponse.next();
+    return withLegacyCookieCleanup(NextResponse.next());
   }
 
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   if (!token) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    return withLegacyCookieCleanup(
+      NextResponse.redirect(new URL("/login", request.url)),
+    );
   }
 
   const user = await parseSessionToken(token);
   if (!user) {
     const response = NextResponse.redirect(new URL("/login", request.url));
     response.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOptions, maxAge: 0 });
+    expireLegacySessionCookies(response);
     return response;
   }
 
@@ -51,7 +63,7 @@ export async function middleware(request: NextRequest) {
           if (data.message) {
             redirectUrl.searchParams.set("message", data.message);
           }
-          return NextResponse.redirect(redirectUrl);
+          return withLegacyCookieCleanup(NextResponse.redirect(redirectUrl));
         }
       }
     } catch {
@@ -59,9 +71,11 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  return NextResponse.next();
+  return withLegacyCookieCleanup(NextResponse.next());
 }
 
 export const config = {
-  matcher: ["/overtime/:path*"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+  ],
 };

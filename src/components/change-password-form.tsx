@@ -11,6 +11,21 @@ export function ChangePasswordForm() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReturningToLogin, setIsReturningToLogin] = useState(false);
+
+  async function handleReturnToLogin() {
+    setError("");
+    setIsReturningToLogin(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      router.push("/login");
+      router.refresh();
+    } catch {
+      setError("로그인 화면으로 이동하지 못했습니다.");
+    } finally {
+      setIsReturningToLogin(false);
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -142,10 +157,19 @@ export function ChangePasswordForm() {
 
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || isReturningToLogin}
             className="w-full rounded-lg bg-[#004b87] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#003a6a] focus:outline-none focus:ring-2 focus:ring-[#004b87]/30 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isSubmitting ? "변경 중..." : "비밀번호 변경"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleReturnToLogin()}
+            disabled={isSubmitting || isReturningToLogin}
+            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-300/40 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isReturningToLogin ? "이동 중..." : "ID/PW 재입력"}
           </button>
         </form>
       </div>

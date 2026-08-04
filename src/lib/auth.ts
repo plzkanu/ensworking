@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
   createSessionToken,
+  expireLegacySessionCookies,
+  LEGACY_SESSION_COOKIES,
   parseSessionToken,
   SESSION_COOKIE,
   sessionCookieOptions,
@@ -16,6 +18,7 @@ export async function attachSessionCookie(
 ) {
   const token = await createSessionToken(user);
   response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions);
+  expireLegacySessionCookies(response);
   return response;
 }
 
@@ -23,10 +26,14 @@ export async function clearSessionCookie(response?: NextResponse) {
   const expired = { ...sessionCookieOptions, maxAge: 0 };
   if (response) {
     response.cookies.set(SESSION_COOKIE, "", expired);
+    expireLegacySessionCookies(response);
     return response;
   }
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, "", expired);
+  for (const name of LEGACY_SESSION_COOKIES) {
+    cookieStore.set(name, "", expired);
+  }
 }
 
 export async function getSessionUser(): Promise<SessionUser | null> {

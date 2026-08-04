@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     });
   }
 
-  await clearSessionCookie();
-  return NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true });
+  await clearSessionCookie(response);
+  return response;
 }
