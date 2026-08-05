@@ -145,6 +145,12 @@ export interface ErpSubmission {
   createdAt: string;
 }
 
+export interface SessionSettings {
+  inactivityTimeoutMinutes: number;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
 export interface OvertimeRegistrationWindow {
   overtimeType: OvertimeType;
   startsAt: string;

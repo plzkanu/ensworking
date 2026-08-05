@@ -12,6 +12,11 @@ export function LoginForm() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const timeoutNotice =
+    searchParams.get("reason") === "timeout"
+      ? "미사용 시간이 경과하여 자동 로그아웃되었습니다. 다시 로그인해 주세요."
+      : "";
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
@@ -125,6 +130,12 @@ export function LoginForm() {
               className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-[#009ada] focus:ring-2 focus:ring-[#009ada]/20"
             />
           </div>
+
+          {timeoutNotice ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {timeoutNotice}
+            </p>
+          ) : null}
 
           {error ? (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">

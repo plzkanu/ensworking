@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { ActivityTracker } from "@/components/activity-tracker";
 import { AppSidebar } from "@/components/app-sidebar";
+import { InactivityLogout } from "@/components/inactivity-logout";
 import { syncSessionPresence } from "@/lib/access-log-store";
 import { getSessionUser } from "@/lib/auth";
 import { getServerRequestMeta } from "@/lib/server-request-meta";
@@ -33,6 +34,7 @@ export default async function DashboardLayout({
   return (
     <div className="min-h-screen bg-[#F5F6F8]">
       <ActivityTracker />
+      <InactivityLogout />
       <AppSidebar user={user} />
       <main className="ml-[220px] min-h-screen flex-1 p-7">{children}</main>
     </div>

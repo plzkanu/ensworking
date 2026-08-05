@@ -53,7 +53,9 @@ export async function listActivityLogs(options?: {
 }): Promise<ActivityLogEntry[]> {
   requireSupabase();
   const supabase = createServerClient();
-  const limit = Math.min(options?.limit ?? 200, 500);
+  const limit = options?.userId
+    ? Math.min(options?.limit ?? 10000, 20000)
+    : Math.min(options?.limit ?? 200, 500);
 
   let query = supabase
     .from("ens_user_activity_logs")
