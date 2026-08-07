@@ -20,13 +20,6 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!user.mustChangePassword) {
-      return NextResponse.json(
-        { error: "비밀번호 변경이 필요하지 않습니다." },
-        { status: 400 },
-      );
-    }
-
     const body = (await request.json()) as {
       currentPassword?: string;
       newPassword?: string;

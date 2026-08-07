@@ -22,9 +22,15 @@ import {
   flattenSubmissionsToRows,
   getErpSubmissionRowKey,
 } from "@/lib/erp-submission-rows";
+import {
+  buildDepartmentSummaries,
+  buildSubmissionTotals,
+  formatTotalHours,
+} from "@/lib/erp-submission-stats";
 import type { ErpSubmission } from "@/lib/types";
 import { AppDialog } from "@/components/ui/app-dialog";
 import { useAppDialog } from "@/hooks/use-app-dialog";
+import { ErpDepartmentSummaryPanel } from "@/components/admin/erp-department-summary-panel";
 
 const filterButtonOutlineClassName =
   "shrink-0 rounded-lg border border-[#004b87] px-4 py-2 text-sm font-semibold text-[#004b87] transition hover:bg-[#004b87]/5 disabled:cursor-not-allowed disabled:opacity-40";
@@ -48,6 +54,7 @@ export function ErpSubmissionsPanel() {
     ERP_LIST_DEFAULT_PAGE_SIZE,
   );
   const [listPage, setListPage] = useState(1);
+  const [showDepartmentSummary, setShowDepartmentSummary] = useState(false);
   const { confirm, alert, dialogProps } = useAppDialog();
 
   const resultRows = useMemo(
@@ -57,6 +64,14 @@ export function ErpSubmissionsPanel() {
   const pivotModel = useMemo(
     () => buildErpPivotModel(submissions, yearMonth || undefined),
     [submissions, yearMonth],
+  );
+  const submissionTotals = useMemo(
+    () => buildSubmissionTotals(submissions),
+    [submissions],
+  );
+  const departmentSummaries = useMemo(
+    () => buildDepartmentSummaries(submissions),
+    [submissions],
   );
 
   async function loadSubmissions(
@@ -214,12 +229,21 @@ export function ErpSubmissionsPanel() {
   const summaryText = loading
     ? "불러오는 중..."
     : formVersion === "erp"
-      ? `제출 ${submissions.length}건 · 대상자 ${pivotModel?.personBlocks.length ?? 0}명 · ERP 행 ${pivotModel?.totalRows ?? 0}건`
-      : `제출 ${submissions.length}건 · 근무기록 ${resultRows.length}건`;
+      ? `제출 ${submissionTotals.submissionCount}건 · 대상자 ${pivotModel?.personBlocks.length ?? 0}명 · ERP 행 ${pivotModel?.totalRows ?? 0}건 · 총 ${formatTotalHours(submissionTotals.totalHours)}`
+      : `제출 ${submissionTotals.submissionCount}건 · 근무기록 ${submissionTotals.recordCount}건 · 총 ${formatTotalHours(submissionTotals.totalHours)}`;
+
+  const showDepartmentSummaryButton = viewScope === "all" && !loading;
+  const showHoursInSummary = viewScope !== "own";
 
   return (
     <>
     <AppDialog {...dialogProps} />
+    <ErpDepartmentSummaryPanel
+      open={showDepartmentSummary}
+      onClose={() => setShowDepartmentSummary(false)}
+      summaries={departmentSummaries}
+      grandTotal={submissionTotals}
+    />
     <div className="space-y-4">
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-nowrap items-end gap-3 overflow-x-auto">
@@ -324,8 +348,25 @@ export function ErpSubmissionsPanel() {
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-600">{summaryText}</p>
+        <p className="text-sm text-slate-600">
+          {showHoursInSummary
+            ? summaryText
+            : loading
+              ? "불러오는 중..."
+              : formVersion === "erp"
+                ? `제출 ${submissionTotals.submissionCount}건 · 대상자 ${pivotModel?.personBlocks.length ?? 0}명 · ERP 행 ${pivotModel?.totalRows ?? 0}건`
+                : `제출 ${submissionTotals.submissionCount}건 · 근무기록 ${submissionTotals.recordCount}건`}
+        </p>
         <div className="flex flex-wrap items-center gap-2">
+          {showDepartmentSummaryButton ? (
+            <button
+              type="button"
+              onClick={() => setShowDepartmentSummary(true)}
+              className={filterButtonOutlineClassName}
+            >
+              부서별 합계
+            </button>
+          ) : null}
           {formVersion === "list" && resultRows.length > 0 ? (
             <button
               type="button"

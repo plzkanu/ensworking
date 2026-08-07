@@ -2,8 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ChangePasswordModal } from "@/components/change-password-modal";
 import { LogoutButton } from "@/components/logout-button";
+import { AppDialog } from "@/components/ui/app-dialog";
+import { useAppDialog } from "@/hooks/use-app-dialog";
 import { SoosanLogo } from "@/components/soosan-logo";
 import {
   isAdminNavPath,
@@ -50,6 +53,26 @@ export function AppSidebar({ user }: AppSidebarProps) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() =>
     buildInitialOpenGroups(pathname),
   );
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const { alert, dialogProps } = useAppDialog();
+
+  useEffect(() => {
+    if (!userMenuOpen) {
+      return;
+    }
+    function handlePointerDown(event: MouseEvent) {
+      if (
+        userMenuRef.current &&
+        !userMenuRef.current.contains(event.target as Node)
+      ) {
+        setUserMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => window.removeEventListener("mousedown", handlePointerDown);
+  }, [userMenuOpen]);
 
   useEffect(() => {
     setOpenGroups((prev) => {
@@ -71,6 +94,18 @@ export function AppSidebar({ user }: AppSidebarProps) {
   }
 
   return (
+    <>
+    <AppDialog {...dialogProps} />
+    <ChangePasswordModal
+      open={passwordModalOpen}
+      onClose={() => setPasswordModalOpen(false)}
+      onSuccess={() =>
+        void alert("비밀번호가 변경되었습니다.", {
+          type: "success",
+          title: "변경 완료",
+        })
+      }
+    />
     <aside className="fixed top-0 left-0 z-[100] flex h-screen w-[220px] flex-col bg-[#0F2645]">
       <div className="border-b border-white/8 px-4 pt-5 pb-4">
         <Link
@@ -170,22 +205,61 @@ export function AppSidebar({ user }: AppSidebarProps) {
       </nav>
 
       <div className="border-t border-white/8 px-[18px] py-4">
-        <div className="mb-3 flex items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1E5FD4] text-xs font-semibold text-white">
-            {initial}
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-[13px] font-medium text-white">
-              {user.name}
-            </p>
-            <p className="truncate text-[11px] text-white/55">
-              {user.department ? `${user.department} · ` : ""}
-              {user.id}
-            </p>
-          </div>
+        <div ref={userMenuRef} className="relative mb-3">
+          <button
+            type="button"
+            onClick={() => setUserMenuOpen((open) => !open)}
+            className={`flex w-full items-center gap-2.5 rounded-lg px-1 py-1 text-left transition ${
+              userMenuOpen
+                ? "bg-white/10"
+                : "hover:bg-white/6"
+            }`}
+            aria-expanded={userMenuOpen}
+            aria-haspopup="menu"
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1E5FD4] text-xs font-semibold text-white">
+              {initial}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13px] font-medium text-white">
+                {user.name}
+              </p>
+              <p className="truncate text-[11px] text-white/55">
+                {user.department ? `${user.department} · ` : ""}
+                {user.id}
+              </p>
+            </div>
+            <span
+              aria-hidden
+              className={`shrink-0 text-[10px] text-white/45 transition ${
+                userMenuOpen ? "rotate-180" : ""
+              }`}
+            >
+              ▼
+            </span>
+          </button>
+          {userMenuOpen ? (
+            <div
+              role="menu"
+              className="absolute right-0 bottom-full left-0 mb-1 overflow-hidden rounded-lg border border-white/10 bg-[#152a4a] shadow-lg"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  setPasswordModalOpen(true);
+                }}
+                className="block w-full px-3 py-2.5 text-left text-[12px] text-white/85 transition hover:bg-white/8 hover:text-white"
+              >
+                비밀번호 변경
+              </button>
+            </div>
+          ) : null}
         </div>
         <LogoutButton />
       </div>
     </aside>
+    </>
   );
 }
