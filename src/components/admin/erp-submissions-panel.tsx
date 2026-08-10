@@ -233,7 +233,6 @@ export function ErpSubmissionsPanel() {
       : `제출 ${submissionTotals.submissionCount}건 · 근무기록 ${submissionTotals.recordCount}건 · 총 ${formatTotalHours(submissionTotals.totalHours)}`;
 
   const showDepartmentSummaryButton = viewScope === "all" && !loading;
-  const showHoursInSummary = viewScope !== "own";
 
   return (
     <>
@@ -348,15 +347,7 @@ export function ErpSubmissionsPanel() {
       ) : null}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-600">
-          {showHoursInSummary
-            ? summaryText
-            : loading
-              ? "불러오는 중..."
-              : formVersion === "erp"
-                ? `제출 ${submissionTotals.submissionCount}건 · 대상자 ${pivotModel?.personBlocks.length ?? 0}명 · ERP 행 ${pivotModel?.totalRows ?? 0}건`
-                : `제출 ${submissionTotals.submissionCount}건 · 근무기록 ${submissionTotals.recordCount}건`}
-        </p>
+        <p className="text-sm text-slate-600">{summaryText}</p>
         <div className="flex flex-wrap items-center gap-2">
           {showDepartmentSummaryButton ? (
             <button
