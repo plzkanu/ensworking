@@ -1,0 +1,72 @@
+  <!-- 수동 입력 모달 -->
+  <div class="cmo" id="manualEntryModal" style="display:none" onclick="if(event.target===this)closeManualEntryModal()">
+    <div class="cmo-box" style="width:520px" onclick="event.stopPropagation()">
+      <h4>✏️ 근무기록 수동 입력</h4>
+      <p style="font-size:12px;color:var(--t3);margin:0 0 14px;line-height:1.6">
+        한 건씩 직접 입력합니다. 이름 입력 시 사원명부에서 사번·부서가 자동 채워집니다.
+      </p>
+      <div class="err-fix" id="manualEntryFix">
+        <div class="manual-grid">
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">이름</label>
+            <input class="fix-name" id="manualName" type="text" placeholder="이름" oninput="onManualNameInput()" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">부서</label>
+            <input id="manualDept" type="text" readonly placeholder="자동 입력" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--t2)">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">사번</label>
+            <input class="fix-emp" id="manualEmp" type="text" placeholder="6자리 사번" maxlength="6" oninput="onManualEmpInput()" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">근무일자</label>
+            <input id="manualDate" type="date" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">시작 <span style="font-weight:400;color:var(--t3)">(30분 단위)</span></label>
+            <select id="manualStart" onchange="onManualStartOrHoursChange()" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--t1)"></select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">시간수</label>
+            <input id="manualHours" type="number" min="0.5" step="0.5" placeholder="예: 2" oninput="onManualStartOrHoursChange()" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">종료 <span style="font-weight:400;color:var(--t3)">(30분 단위, 수정 가능)</span></label>
+            <select id="manualEnd" onchange="onManualEndChange()" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--t1)"></select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--t2);font-weight:600">근무내용</label>
+            <input id="manualContent" type="text" placeholder="선택 입력" style="width:100%;margin-top:4px;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:8px">
+          </div>
+        </div>
+        <div class="fix-hint" id="manualNameHint" style="margin-top:8px;font-size:11px;line-height:1.7"></div>
+        <div style="display:flex;gap:16px;margin-top:12px;font-size:13px;color:var(--t2)">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input id="manualNight" type="checkbox"> 평일야간출근 (V)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input id="manualHol" type="checkbox"> 휴일조기출근 (V)
+          </label>
+        </div>
+      </div>
+      <div class="cmo-btns" style="margin-top:16px">
+        <button type="button" class="cmo-cancel" onclick="closeManualEntryModal()">취소</button>
+        <button type="button" class="cmo-save" onclick="submitManualEntry()">추가</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 동명이인 선택 모달 -->
+  <div class="cmo" id="dupNameModal" style="display:none" onclick="if(event.target===this)closeDuplicateNameModal()">
+    <div class="cmo-box" style="width:420px" onclick="event.stopPropagation()">
+      <h4>동명이인 선택</h4>
+      <p style="font-size:13px;color:var(--t2);margin:0 0 12px;line-height:1.6">
+        <strong id="dupNameLabel"></strong> 님과 같은 이름이 여러 명 있습니다. 해당하는 사번을 선택해 주세요.
+      </p>
+      <div id="dupNameList" style="max-height:280px;overflow-y:auto"></div>
+      <div class="cmo-btns" style="margin-top:12px">
+        <button type="button" class="cmo-cancel" onclick="closeDuplicateNameModal()">닫기</button>
+      </div>
+    </div>
+  </div>

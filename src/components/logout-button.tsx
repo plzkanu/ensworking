@@ -3,11 +3,16 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { ensureCanLeaveOvertime } from "@/lib/overtime-unsaved";
+
 export function LogoutButton() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
 
   async function handleLogout() {
+    const canLeave = await ensureCanLeaveOvertime();
+    if (!canLeave) return;
+
     setIsLoading(true);
     try {
       await fetch("/api/auth/logout", { method: "POST" });
