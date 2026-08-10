@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   buttonDangerClassName,
   buttonPrimaryClassName,
@@ -65,6 +65,7 @@ export function UserManagementPanel() {
   const [importing, setImporting] = useState(false);
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [importResults, setImportResults] = useState<ImportResultItem[]>([]);
+  const [nameSearch, setNameSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { confirm, dialogProps } = useAppDialog();
 
@@ -112,6 +113,14 @@ export function UserManagementPanel() {
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const filteredUsers = useMemo(() => {
+    const query = nameSearch.trim();
+    if (!query) {
+      return users;
+    }
+    return users.filter((user) => user.name.includes(query));
+  }, [users, nameSearch]);
 
   function resetForm() {
     setForm({
@@ -538,15 +547,41 @@ export function UserManagementPanel() {
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="mb-4 text-base font-semibold text-[#004b87]">
-          사용자 목록
-        </h2>
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <h2 className="text-base font-semibold text-[#004b87]">사용자 목록</h2>
+          <div className="w-full max-w-xs">
+            <label htmlFor="user-name-search" className={labelClassName}>
+              이름 검색
+            </label>
+            <input
+              id="user-name-search"
+              type="text"
+              value={nameSearch}
+              onChange={(e) => setNameSearch(e.target.value)}
+              placeholder="이름으로 검색"
+              className={inputClassName}
+            />
+          </div>
+        </div>
 
         {loading ? (
           <p className="text-sm text-slate-500">불러오는 중...</p>
         ) : users.length === 0 ? (
           <p className="text-sm text-slate-500">등록된 사용자가 없습니다.</p>
+        ) : filteredUsers.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            &quot;{nameSearch.trim()}&quot;에 해당하는 사용자가 없습니다.
+          </p>
         ) : (
+          <>
+            {nameSearch.trim() ? (
+              <p className="mb-3 text-sm text-slate-500">
+                검색 결과 {filteredUsers.length}명
+                {filteredUsers.length !== users.length
+                  ? ` (전체 ${users.length}명)`
+                  : ""}
+              </p>
+            ) : null}
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
               <thead>
@@ -562,7 +597,7 @@ export function UserManagementPanel() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {filteredUsers.map((user) => (
                   <tr key={user.id} className="border-b border-slate-100">
                     <td className="px-2 py-2 font-medium text-slate-800">
                       {user.id}
@@ -609,6 +644,7 @@ export function UserManagementPanel() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
       </div>

@@ -3,10 +3,12 @@ import type {
   ErpSubmission,
   ErpSubmissionDayEntry,
   ErpSubmissionPersonBlock,
+  OvertimeType,
 } from "./types";
 
 export const ERP_EXCEL_HEADERS = [
   "순번",
+  "유형",
   "이름",
   "부서",
   "사번",
@@ -22,6 +24,63 @@ export const ERP_EXCEL_HEADERS = [
   "파일",
 ] as const;
 
+export const ERP_SUBMITTER_HEADER = "등록자";
+
+export type ErpListColumnKey =
+  | "seq"
+  | "overtimeType"
+  | "name"
+  | "dept"
+  | "empno"
+  | "date"
+  | "start"
+  | "end"
+  | "hours"
+  | "workType"
+  | "nightLabel"
+  | "holLabel"
+  | "notes"
+  | "submitter"
+  | "file";
+
+export const ERP_LIST_COLUMN_LABELS: Record<ErpListColumnKey, string> = {
+  seq: "순번",
+  overtimeType: "유형",
+  name: "이름",
+  dept: "부서",
+  empno: "사번",
+  date: "근무일자",
+  start: "시작",
+  end: "종료",
+  hours: "시간수",
+  workType: "근무유형",
+  nightLabel: "평일야간출근",
+  holLabel: "휴일조기출근",
+  notes: "비고",
+  submitter: ERP_SUBMITTER_HEADER,
+  file: "파일",
+};
+
+export const ERP_LIST_DEFAULT_COLUMN_KEYS: ErpListColumnKey[] = [
+  "seq",
+  "overtimeType",
+  "name",
+  "dept",
+  "empno",
+  "date",
+  "start",
+  "end",
+  "hours",
+  "workType",
+  "nightLabel",
+  "holLabel",
+  "notes",
+  "file",
+];
+
+export const ERP_LIST_COLUMN_ORDER_STORAGE_KEY =
+  "erp-submission-list-column-order";
+
 export interface ErpSubmissionExcelRow {
   seq: number;
   submissionId: string;
@@ -29,6 +88,7 @@ export interface ErpSubmissionExcelRow {
   name: string;
   dept: string;
   empno: string;
+  overtimeTypeLabel: string;
   date: string;
   dayKr: string;
   start: string;
@@ -43,9 +103,11 @@ export interface ErpSubmissionExcelRow {
   submittedByDepartment: string;
 }
 
-export const ERP_SUBMITTER_HEADER = "등록자";
-
 const DAY_KR = ["일", "월", "화", "수", "목", "금", "토"];
+
+function formatOvertimeTypeLabel(type: OvertimeType): string {
+  return type === "flexible" ? "유연" : "일반";
+}
 
 function isWeekend(date: string): boolean {
   const dt = new Date(`${date}T00:00:00`);
@@ -107,6 +169,7 @@ function buildRowLabels(
 
 function flattenSubmission(submission: ErpSubmission): ErpSubmissionExcelRow[] {
   const rows: ErpSubmissionExcelRow[] = [];
+  const overtimeTypeLabel = formatOvertimeTypeLabel(submission.overtimeType);
 
   for (const block of submission.payload.personBlocks) {
     block.slots.forEach((slot, slotIndex) => {
@@ -119,6 +182,7 @@ function flattenSubmission(submission: ErpSubmission): ErpSubmissionExcelRow[] {
           name: block.name || "",
           dept: block.dept || "",
           empno: block.empno || "",
+          overtimeTypeLabel,
           date,
           dayKr: dayOfWeekKr(date),
           start: entry.start || "",
@@ -180,19 +244,68 @@ export function getErpExcelHeaders(includeSubmitter = false): string[] {
 }
 
 export function getErpListTableHeaders(showSubmitter = false): string[] {
-  const headers = ERP_EXCEL_HEADERS.filter((header) => header !== "요일");
+  return getErpListColumnKeys(showSubmitter).map(
+    (key) => ERP_LIST_COLUMN_LABELS[key],
+  );
+}
+
+export function getErpListColumnKeys(
+  showSubmitter = false,
+): ErpListColumnKey[] {
   if (!showSubmitter) {
-    return headers;
+    return [...ERP_LIST_DEFAULT_COLUMN_KEYS];
   }
-  const fileIndex = headers.indexOf("파일");
-  if (fileIndex === -1) {
-    return [...headers, ERP_SUBMITTER_HEADER];
+  const keys = [...ERP_LIST_DEFAULT_COLUMN_KEYS];
+  const fileIndex = keys.indexOf("file");
+  keys.splice(fileIndex, 0, "submitter");
+  return keys;
+}
+
+export function normalizeErpListColumnOrder(
+  order: string[] | null | undefined,
+  available: ErpListColumnKey[],
+): ErpListColumnKey[] {
+  const next: ErpListColumnKey[] = [];
+  for (const key of order ?? []) {
+    if (available.includes(key as ErpListColumnKey)) {
+      next.push(key as ErpListColumnKey);
+    }
   }
-  return [
-    ...headers.slice(0, fileIndex),
-    ERP_SUBMITTER_HEADER,
-    ...headers.slice(fileIndex),
-  ];
+  for (const key of available) {
+    if (!next.includes(key)) {
+      next.push(key);
+    }
+  }
+  return next;
+}
+
+export function loadErpListColumnOrder(
+  showSubmitter: boolean,
+): ErpListColumnKey[] {
+  const available = getErpListColumnKeys(showSubmitter);
+  if (typeof window === "undefined") {
+    return available;
+  }
+  try {
+    const raw = window.localStorage.getItem(ERP_LIST_COLUMN_ORDER_STORAGE_KEY);
+    if (!raw) {
+      return available;
+    }
+    const parsed = JSON.parse(raw) as string[];
+    return normalizeErpListColumnOrder(parsed, available);
+  } catch {
+    return available;
+  }
+}
+
+export function saveErpListColumnOrder(order: ErpListColumnKey[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(
+    ERP_LIST_COLUMN_ORDER_STORAGE_KEY,
+    JSON.stringify(order),
+  );
 }
 
 export function formatErpSubmitter(row: ErpSubmissionExcelRow): string {
@@ -210,6 +323,7 @@ export function erpRowToArray(
 ): (string | number)[] {
   const values: (string | number)[] = [
     row.seq,
+    row.overtimeTypeLabel,
     row.name,
     row.dept,
     row.empno,
@@ -257,6 +371,7 @@ export async function downloadErpSubmissionExcel(
 
   ws["!cols"] = [
     { wch: 5 },
+    { wch: 6 },
     { wch: 9 },
     { wch: 18 },
     { wch: 8 },
@@ -309,7 +424,7 @@ export async function downloadErpSubmissionExcel(
 
   const alignC = { horizontal: "center", vertical: "center" };
   const alignL = { horizontal: "left", vertical: "center" };
-  const centerCols = new Set([0, 5, 6, 7, 8, 10, 11]);
+  const centerCols = new Set([0, 1, 5, 6, 7, 8, 9, 11, 12]);
 
   for (let ri = 0; ri < wsData.length; ri++) {
     const isHdr = ri === 0;
@@ -336,15 +451,15 @@ export async function downloadErpSubmissionExcel(
       let font: Record<string, unknown> = fontBase;
       if (isHdr) {
         font = fontHdr;
-      } else if (ci === 10 && flags?.isNight) {
+      } else if (ci === 11 && flags?.isNight) {
         font = fontNight;
-      } else if (ci === 11 && flags?.isHolWarn) {
+      } else if (ci === 12 && flags?.isHolWarn) {
         font = fontWarn;
-      } else if (ci === 11 && flags?.isHolMiss) {
+      } else if (ci === 12 && flags?.isHolMiss) {
         font = { ...fontWarn, color: { rgb: "F04452" } };
-      } else if (ci === 9 && flags?.isHolidayRow) {
+      } else if (ci === 10 && flags?.isHolidayRow) {
         font = fontHol;
-      } else if (ci === 5) {
+      } else if (ci === 6) {
         const dayV = String(wsData[ri][ci]);
         if (dayV === "토") {
           font = { ...fontBase, color: { rgb: "3182F6" }, bold: true };

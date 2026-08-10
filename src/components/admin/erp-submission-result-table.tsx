@@ -1,12 +1,24 @@
 "use client";
 
-import { useMemo } from "react";
 import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
+import {
+  ERP_LIST_COLUMN_LABELS,
   flattenSubmissionsToRows,
   formatErpSubmitter,
-  getErpListTableHeaders,
+  getErpListColumnKeys,
   getErpRowStyleFlags,
   getErpSubmissionRowKey,
+  loadErpListColumnOrder,
+  normalizeErpListColumnOrder,
+  saveErpListColumnOrder,
+  type ErpListColumnKey,
   type ErpSubmissionExcelRow,
 } from "@/lib/erp-submission-rows";
 import type { ErpSubmission } from "@/lib/types";
@@ -42,6 +54,145 @@ function dayClass(dayKr: string): string {
   return "text-slate-700";
 }
 
+function reorderColumns(
+  order: ErpListColumnKey[],
+  source: ErpListColumnKey,
+  target: ErpListColumnKey,
+): ErpListColumnKey[] {
+  if (source === target) {
+    return order;
+  }
+  const next = order.filter((key) => key !== source);
+  const targetIndex = next.indexOf(target);
+  if (targetIndex === -1) {
+    return order;
+  }
+  next.splice(targetIndex, 0, source);
+  return next;
+}
+
+function renderListCell(
+  column: ErpListColumnKey,
+  row: ErpSubmissionExcelRow,
+  flags: ReturnType<typeof getErpRowStyleFlags>,
+): ReactNode {
+  switch (column) {
+    case "seq":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center text-slate-700">
+          {row.seq}
+        </td>
+      );
+    case "overtimeType":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap font-medium text-[#004b87]">
+          {row.overtimeTypeLabel}
+        </td>
+      );
+    case "name":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-800">
+          {row.name}
+        </td>
+      );
+    case "dept":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
+          {row.dept}
+        </td>
+      );
+    case "empno":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
+          {row.empno}
+        </td>
+      );
+    case "date":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
+          {row.date}
+          {row.dayKr ? (
+            <span className={dayClass(row.dayKr)}> ({row.dayKr})</span>
+          ) : null}
+        </td>
+      );
+    case "start":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
+          {row.start}
+        </td>
+      );
+    case "end":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
+          {row.end}
+        </td>
+      );
+    case "hours":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-center text-slate-700">
+          {row.hours}
+        </td>
+      );
+    case "workType":
+      return (
+        <td
+          className={`border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap ${
+            flags.isHolidayRow
+              ? "font-semibold text-[#F04452]"
+              : "text-slate-700"
+          }`}
+        >
+          {row.workType}
+        </td>
+      );
+    case "nightLabel":
+      return (
+        <td
+          className={`border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap ${
+            flags.isNight ? "font-semibold text-[#7C3AED]" : "text-slate-700"
+          }`}
+        >
+          {row.nightLabel}
+        </td>
+      );
+    case "holLabel":
+      return (
+        <td
+          className={`border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap ${
+            flags.isHolMiss
+              ? "font-semibold text-[#F04452]"
+              : flags.isHolWarn
+                ? "font-semibold text-[#D97706]"
+                : "text-slate-700"
+          }`}
+        >
+          {row.holLabel}
+        </td>
+      );
+    case "notes":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 text-slate-700">
+          {row.notes}
+        </td>
+      );
+    case "submitter":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
+          {formatErpSubmitter(row)}
+        </td>
+      );
+    case "file":
+      return (
+        <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
+          {row.file}
+        </td>
+      );
+    default:
+      return null;
+  }
+}
+
 export function ErpSubmissionResultTable({
   submissions,
   showSubmitter = false,
@@ -63,8 +214,28 @@ export function ErpSubmissionResultTable({
   onPageChange?: (page: number) => void;
   onPageSizeChange?: (pageSize: ErpListPageSize) => void;
 }) {
+  const availableColumns = useMemo(
+    () => getErpListColumnKeys(showSubmitter),
+    [showSubmitter],
+  );
+  const [columnOrder, setColumnOrder] = useState<ErpListColumnKey[]>(() =>
+    loadErpListColumnOrder(showSubmitter),
+  );
+  const [draggingColumn, setDraggingColumn] = useState<ErpListColumnKey | null>(
+    null,
+  );
+  const [dragOverColumn, setDragOverColumn] =
+    useState<ErpListColumnKey | null>(null);
+
+  useEffect(() => {
+    setColumnOrder(loadErpListColumnOrder(showSubmitter));
+  }, [showSubmitter]);
+
+  useEffect(() => {
+    saveErpListColumnOrder(columnOrder);
+  }, [columnOrder]);
+
   const rows = flattenSubmissionsToRows(submissions);
-  const tableHeaders = getErpListTableHeaders(showSubmitter);
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(Math.max(page, 1), totalPages);
   const pageStart = (safePage - 1) * pageSize;
@@ -109,6 +280,49 @@ export function ErpSubmissionResultTable({
     onSelectedKeysChange(next);
   }
 
+  function handleDragStart(
+    event: DragEvent<HTMLTableCellElement>,
+    column: ErpListColumnKey,
+  ) {
+    setDraggingColumn(column);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", column);
+  }
+
+  function handleDragOver(
+    event: DragEvent<HTMLTableCellElement>,
+    column: ErpListColumnKey,
+  ) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (draggingColumn && draggingColumn !== column) {
+      setDragOverColumn(column);
+    }
+  }
+
+  function handleDrop(
+    event: DragEvent<HTMLTableCellElement>,
+    column: ErpListColumnKey,
+  ) {
+    event.preventDefault();
+    const source =
+      draggingColumn ??
+      (event.dataTransfer.getData("text/plain") as ErpListColumnKey);
+    if (!source || source === column) {
+      setDraggingColumn(null);
+      setDragOverColumn(null);
+      return;
+    }
+    setColumnOrder((prev) => reorderColumns(prev, source, column));
+    setDraggingColumn(null);
+    setDragOverColumn(null);
+  }
+
+  function handleDragEnd() {
+    setDraggingColumn(null);
+    setDragOverColumn(null);
+  }
+
   if (rows.length === 0) {
     return (
       <p className="rounded-xl border border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-500 shadow-sm">
@@ -117,6 +331,11 @@ export function ErpSubmissionResultTable({
     );
   }
 
+  const visibleColumns = useMemo(
+    () => normalizeErpListColumnOrder(columnOrder, availableColumns),
+    [columnOrder, availableColumns],
+  );
+
   return (
     <section className="overflow-hidden rounded-xl border border-[#2170D8]/30 bg-white shadow-sm">
       <div className="overflow-x-auto">
@@ -124,7 +343,7 @@ export function ErpSubmissionResultTable({
           <thead>
             <tr className="bg-[#3182F6] text-white">
               {selectable ? (
-                <th className="border border-[#2170D8] px-2 py-2 text-center font-semibold w-10">
+                <th className="w-10 border border-[#2170D8] px-2 py-2 text-center font-semibold">
                   <input
                     type="checkbox"
                     checked={allSelected}
@@ -134,14 +353,31 @@ export function ErpSubmissionResultTable({
                   />
                 </th>
               ) : null}
-              {tableHeaders.map((header) => (
-                <th
-                  key={header}
-                  className="border border-[#2170D8] px-2 py-2 text-center font-semibold whitespace-nowrap"
-                >
-                  {header}
-                </th>
-              ))}
+              {visibleColumns.map((column) => {
+                const isDragging = draggingColumn === column;
+                const isDragOver = dragOverColumn === column;
+                return (
+                  <th
+                    key={column}
+                    draggable
+                    onDragStart={(event) => handleDragStart(event, column)}
+                    onDragOver={(event) => handleDragOver(event, column)}
+                    onDrop={(event) => handleDrop(event, column)}
+                    onDragEnd={handleDragEnd}
+                    title="드래그하여 열 순서 변경"
+                    className={`cursor-grab border border-[#2170D8] px-2 py-2 text-center font-semibold whitespace-nowrap select-none active:cursor-grabbing ${
+                      isDragging ? "opacity-50" : ""
+                    } ${isDragOver ? "ring-2 ring-inset ring-white/80" : ""}`}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <span aria-hidden className="text-[10px] text-white/70">
+                        ⋮⋮
+                      </span>
+                      {ERP_LIST_COLUMN_LABELS[column]}
+                    </span>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -164,71 +400,11 @@ export function ErpSubmissionResultTable({
                       />
                     </td>
                   ) : null}
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-center text-slate-700">
-                    {row.seq}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-800">
-                    {row.name}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
-                    {row.dept}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
-                    {row.empno}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
-                    {row.date}
-                    {row.dayKr ? (
-                      <span className={dayClass(row.dayKr)}> ({row.dayKr})</span>
-                    ) : null}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
-                    {row.start}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap text-slate-700">
-                    {row.end}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-center text-slate-700">
-                    {row.hours}
-                  </td>
-                  <td
-                    className={`border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap ${
-                      flags.isHolidayRow
-                        ? "font-semibold text-[#F04452]"
-                        : "text-slate-700"
-                    }`}
-                  >
-                    {row.workType}
-                  </td>
-                  <td
-                    className={`border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap ${
-                      flags.isNight ? "font-semibold text-[#7C3AED]" : "text-slate-700"
-                    }`}
-                  >
-                    {row.nightLabel}
-                  </td>
-                  <td
-                    className={`border border-[#E2E5EA] px-2 py-1.5 text-center whitespace-nowrap ${
-                      flags.isHolMiss
-                        ? "font-semibold text-[#F04452]"
-                        : flags.isHolWarn
-                          ? "font-semibold text-[#D97706]"
-                          : "text-slate-700"
-                    }`}
-                  >
-                    {row.holLabel}
-                  </td>
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 text-slate-700">
-                    {row.notes}
-                  </td>
-                  {showSubmitter ? (
-                    <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
-                      {formatErpSubmitter(row)}
-                    </td>
-                  ) : null}
-                  <td className="border border-[#E2E5EA] px-2 py-1.5 whitespace-nowrap text-slate-700">
-                    {row.file}
-                  </td>
+                  {visibleColumns.map((column) => (
+                    <Fragment key={`${rowKey}-${column}`}>
+                      {renderListCell(column, row, flags)}
+                    </Fragment>
+                  ))}
                 </tr>
               );
             })}
@@ -236,13 +412,18 @@ export function ErpSubmissionResultTable({
         </table>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-        <p>
-          전체 {rows.length.toLocaleString()}건 중{" "}
-          {rows.length === 0
-            ? "0"
-            : `${(pageStart + 1).toLocaleString()}-${Math.min(pageStart + pageSize, rows.length).toLocaleString()}`}
-          건 표시
-        </p>
+        <div>
+          <p>
+            전체 {rows.length.toLocaleString()}건 중{" "}
+            {rows.length === 0
+              ? "0"
+              : `${(pageStart + 1).toLocaleString()}-${Math.min(pageStart + pageSize, rows.length).toLocaleString()}`}
+            건 표시
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            열 제목을 드래그하면 표시 순서를 변경할 수 있습니다.
+          </p>
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2">
             <span className="whitespace-nowrap text-slate-600">표시 개수</span>
