@@ -15,6 +15,12 @@ export interface ErpDepartmentSummary extends ErpSubmissionTotals {
   department: string;
 }
 
+export interface ErpPersonSummary extends ErpSubmissionTotals {
+  name: string;
+  department: string;
+  empno: string;
+}
+
 function parseHours(value: number | string | undefined): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) {
@@ -117,6 +123,65 @@ export function buildDepartmentSummaries(
       totalHours: roundHours(group.totalHours),
     }))
     .sort((a, b) => a.department.localeCompare(b.department, "ko"));
+}
+
+export function buildPersonSummaries(
+  submissions: ErpSubmission[],
+): ErpPersonSummary[] {
+  const groups = new Map<
+    string,
+    {
+      name: string;
+      department: string;
+      empno: string;
+      submissionIds: Set<string>;
+      recordCount: number;
+      totalHours: number;
+    }
+  >();
+
+  for (const submission of submissions) {
+    for (const block of submission.payload.personBlocks) {
+      const name = block.name?.trim() || "미지정";
+      const department = block.dept?.trim() || "미지정";
+      const empno = block.empno?.trim() || "";
+      const key = `${name}\0${department}\0${empno}`;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          name,
+          department,
+          empno,
+          submissionIds: new Set(),
+          recordCount: 0,
+          totalHours: 0,
+        });
+      }
+
+      const group = groups.get(key)!;
+      group.submissionIds.add(submission.id);
+      const bucket = { recordCount: 0, totalHours: 0 };
+      accumulateBlockHours(block, bucket);
+      group.recordCount += bucket.recordCount;
+      group.totalHours += bucket.totalHours;
+    }
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      name: group.name,
+      department: group.department,
+      empno: group.empno,
+      submissionCount: group.submissionIds.size,
+      recordCount: group.recordCount,
+      totalHours: roundHours(group.totalHours),
+    }))
+    .sort(
+      (a, b) =>
+        a.department.localeCompare(b.department, "ko") ||
+        a.name.localeCompare(b.name, "ko") ||
+        a.empno.localeCompare(b.empno),
+    );
 }
 
 export function formatTotalHours(hours: number): string {

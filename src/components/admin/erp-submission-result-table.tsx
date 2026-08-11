@@ -244,6 +244,10 @@ export function ErpSubmissionResultTable({
     () => paginatedRows.map((row) => getErpSubmissionRowKey(row)),
     [paginatedRows],
   );
+  const visibleColumns = useMemo(
+    () => normalizeErpListColumnOrder(columnOrder, availableColumns),
+    [columnOrder, availableColumns],
+  );
   const allSelected =
     selectable &&
     paginatedRows.length > 0 &&
@@ -330,11 +334,6 @@ export function ErpSubmissionResultTable({
       </p>
     );
   }
-
-  const visibleColumns = useMemo(
-    () => normalizeErpListColumnOrder(columnOrder, availableColumns),
-    [columnOrder, availableColumns],
-  );
 
   return (
     <section className="overflow-hidden rounded-xl border border-[#2170D8]/30 bg-white shadow-sm">

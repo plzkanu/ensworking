@@ -20,10 +20,12 @@ import {
   downloadErpSubmissionExcel,
   erpRowToRecordRef,
   flattenSubmissionsToRows,
+  filterSubmissionsByEmployeeName,
   getErpSubmissionRowKey,
 } from "@/lib/erp-submission-rows";
 import {
   buildDepartmentSummaries,
+  buildPersonSummaries,
   buildSubmissionTotals,
   formatTotalHours,
 } from "@/lib/erp-submission-stats";
@@ -31,6 +33,7 @@ import type { ErpSubmission } from "@/lib/types";
 import { AppDialog } from "@/components/ui/app-dialog";
 import { useAppDialog } from "@/hooks/use-app-dialog";
 import { ErpDepartmentSummaryPanel } from "@/components/admin/erp-department-summary-panel";
+import { ErpPersonSummaryPanel } from "@/components/admin/erp-person-summary-panel";
 
 const filterButtonOutlineClassName =
   "shrink-0 rounded-lg border border-[#004b87] px-4 py-2 text-sm font-semibold text-[#004b87] transition hover:bg-[#004b87]/5 disabled:cursor-not-allowed disabled:opacity-40";
@@ -44,6 +47,7 @@ export function ErpSubmissionsPanel() {
   const [yearMonth, setYearMonth] = useState("");
   const [department, setDepartment] = useState("");
   const [submitterName, setSubmitterName] = useState("");
+  const [employeeName, setEmployeeName] = useState("");
   const [viewScope, setViewScope] = useState<ErpSubmissionViewScope>("own");
   const [departments, setDepartments] = useState<string[]>([]);
   const [fixedDepartment, setFixedDepartment] = useState("");
@@ -55,23 +59,32 @@ export function ErpSubmissionsPanel() {
   );
   const [listPage, setListPage] = useState(1);
   const [showDepartmentSummary, setShowDepartmentSummary] = useState(false);
+  const [showPersonSummary, setShowPersonSummary] = useState(false);
   const { confirm, alert, dialogProps } = useAppDialog();
 
+  const filteredSubmissions = useMemo(
+    () => filterSubmissionsByEmployeeName(submissions, employeeName),
+    [submissions, employeeName],
+  );
   const resultRows = useMemo(
-    () => flattenSubmissionsToRows(submissions),
-    [submissions],
+    () => flattenSubmissionsToRows(filteredSubmissions),
+    [filteredSubmissions],
   );
   const pivotModel = useMemo(
-    () => buildErpPivotModel(submissions, yearMonth || undefined),
-    [submissions, yearMonth],
+    () => buildErpPivotModel(filteredSubmissions, yearMonth || undefined),
+    [filteredSubmissions, yearMonth],
   );
   const submissionTotals = useMemo(
-    () => buildSubmissionTotals(submissions),
-    [submissions],
+    () => buildSubmissionTotals(filteredSubmissions),
+    [filteredSubmissions],
   );
   const departmentSummaries = useMemo(
-    () => buildDepartmentSummaries(submissions),
-    [submissions],
+    () => buildDepartmentSummaries(filteredSubmissions),
+    [filteredSubmissions],
+  );
+  const personSummaries = useMemo(
+    () => buildPersonSummaries(filteredSubmissions),
+    [filteredSubmissions],
   );
 
   async function loadSubmissions(
@@ -219,6 +232,10 @@ export function ErpSubmissionsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    setListPage(1);
+  }, [employeeName]);
+
   const showSubmitterFilter = viewScope !== "own";
 
   const canDownload =
@@ -233,6 +250,7 @@ export function ErpSubmissionsPanel() {
       : `제출 ${submissionTotals.submissionCount}건 · 근무기록 ${submissionTotals.recordCount}건 · 총 ${formatTotalHours(submissionTotals.totalHours)}`;
 
   const showDepartmentSummaryButton = viewScope === "all" && !loading;
+  const showPersonSummaryButton = !loading && submissionTotals.recordCount > 0;
 
   return (
     <>
@@ -241,6 +259,12 @@ export function ErpSubmissionsPanel() {
       open={showDepartmentSummary}
       onClose={() => setShowDepartmentSummary(false)}
       summaries={departmentSummaries}
+      grandTotal={submissionTotals}
+    />
+    <ErpPersonSummaryPanel
+      open={showPersonSummary}
+      onClose={() => setShowPersonSummary(false)}
+      summaries={personSummaries}
       grandTotal={submissionTotals}
     />
     <div className="space-y-4">
@@ -271,6 +295,19 @@ export function ErpSubmissionsPanel() {
               className={inputClassName}
               value={yearMonth}
               onChange={(e) => setYearMonth(e.target.value)}
+            />
+          </div>
+          <div className="w-64 shrink-0">
+            <label htmlFor="erp-employee-name" className={labelClassName}>
+              이름
+            </label>
+            <input
+              id="erp-employee-name"
+              type="text"
+              className={inputClassName}
+              value={employeeName}
+              onChange={(e) => setEmployeeName(e.target.value)}
+              placeholder="근무 대상자 이름"
             />
           </div>
           {viewScope === "all" ? (
@@ -349,6 +386,15 @@ export function ErpSubmissionsPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-600">{summaryText}</p>
         <div className="flex flex-wrap items-center gap-2">
+          {showPersonSummaryButton ? (
+            <button
+              type="button"
+              onClick={() => setShowPersonSummary(true)}
+              className={filterButtonOutlineClassName}
+            >
+              개인별 합계
+            </button>
+          ) : null}
           {showDepartmentSummaryButton ? (
             <button
               type="button"
@@ -400,12 +446,12 @@ export function ErpSubmissionsPanel() {
         </p>
       ) : formVersion === "erp" ? (
         <ErpSubmissionPivotTable
-          submissions={submissions}
+          submissions={filteredSubmissions}
           filterYearMonth={yearMonth || undefined}
         />
       ) : (
         <ErpSubmissionResultTable
-          submissions={submissions}
+          submissions={filteredSubmissions}
           showSubmitter={viewScope === "all"}
           selectable
           selectedKeys={selectedRowKeys}

@@ -216,6 +216,28 @@ export function flattenSubmissionsToRows(
   return rows.map((row, index) => ({ ...row, seq: index + 1 }));
 }
 
+export function filterSubmissionsByEmployeeName(
+  submissions: ErpSubmission[],
+  nameQuery: string,
+): ErpSubmission[] {
+  const query = nameQuery.trim();
+  if (!query) {
+    return submissions;
+  }
+
+  return submissions
+    .map((submission) => ({
+      ...submission,
+      payload: {
+        ...submission.payload,
+        personBlocks: submission.payload.personBlocks.filter((block) =>
+          block.name.includes(query),
+        ),
+      },
+    }))
+    .filter((submission) => submission.payload.personBlocks.length > 0);
+}
+
 export function getErpSubmissionRowKey(row: ErpSubmissionExcelRow): string {
   return `${row.submissionId}|${row.empno}|${row.name}|${row.slotIndex}|${row.date}`;
 }
