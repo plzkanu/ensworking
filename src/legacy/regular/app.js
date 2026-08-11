@@ -657,20 +657,6 @@ function nightIntervals(startMin, endMin) {
 }
 
 
-function addDaysToIsoDate(dateStr, days) {
-  if (!dateStr || !days) return dateStr;
-  const dt = new Date(dateStr + 'T00:00:00');
-  dt.setDate(dt.getDate() + days);
-  const y = dt.getFullYear();
-  const m = String(dt.getMonth() + 1).padStart(2, '0');
-  const d = String(dt.getDate()).padStart(2, '0');
-  return y + '-' + m + '-' + d;
-}
-
-function segmentWorkDate(baseDate, absMin) {
-  if (!baseDate) return baseDate;
-  return addDaysToIsoDate(baseDate, Math.floor(absMin / 1440));
-}
 
 function splitRecord(r) {
   const startMin = toMin(r.start);
@@ -706,10 +692,10 @@ function splitRecord(r) {
       const seg1Hours = Math.round((seg1End - startMin) / 60 * 10) / 10;
       const seg2Hours = Math.round((seg2End - seg2Start) / 60 * 10) / 10;
       return [
-        { ...r, date: segmentWorkDate(r.date, startMin), start: r.start,         end: toHHMM(seg1End),   hours: seg1Hours,
+        { ...r, start: r.start,         end: toHHMM(seg1End),   hours: seg1Hours,
           holiday_early: r.holiday_early, night_work: r.night_work,
           _split: true, _splitIdx: 0, _splitTotal: 2 },
-        { ...r, date: segmentWorkDate(r.date, seg2Start), start: toHHMM(seg2Start), end: toHHMM(seg2End), hours: seg2Hours,
+        { ...r, start: toHHMM(seg2Start), end: toHHMM(seg2End), hours: seg2Hours,
           holiday_early: r.holiday_early, night_work: r.night_work,
           _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 1, _splitTotal: 2 },
@@ -736,11 +722,11 @@ function splitRecord(r) {
     const seg2Start  = endMin   - Math.round(afternoonH * 60);  // 실제 종료에서 역산 → 범위 내
     if (morningH >= 0.5 && afternoonH >= 0.5 && seg1End <= seg2Start) {
       return [
-        { ...r, date: segmentWorkDate(r.date, startMin), start: r.start, end: toHHMM(seg1End), hours: morningH,
+        { ...r, start: r.start, end: toHHMM(seg1End), hours: morningH,
           holiday_early: r.holiday_early, night_work: r.night_work,
           _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 0, _splitTotal: 2 },
-        { ...r, date: segmentWorkDate(r.date, seg2Start), start: toHHMM(seg2Start), end: r.end, hours: afternoonH,
+        { ...r, start: toHHMM(seg2Start), end: r.end, hours: afternoonH,
           holiday_early: r.holiday_early, night_work: r.night_work,
           _origHol: r.holiday_early, _origNight: r.night_work,
           _split: true, _splitIdx: 1, _splitTotal: 2 },
@@ -807,8 +793,7 @@ function splitRecord(r) {
     const night = r.night_work;
     return {
       ...r,
-      date: segmentWorkDate(r.date, seg.s),
-      // 바깥 경계(첫 조각 시작 / 마지막 조각 종료)는 원래 시각 문자열을 그대로 유지.
+            // 바깥 경계(첫 조각 시작 / 마지막 조각 종료)는 원래 시각 문자열을 그대로 유지.
       // toHHMM은 24:00을 00:00으로 바꿔 야간(22:00~24:00) 계산이 틀어지므로 방지.
       start: idx === 0       ? r.start : toHHMM(seg.s),
       end:   idx === lastIdx ? r.end   : toHHMM(seg.e),
