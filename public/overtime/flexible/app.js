@@ -1629,6 +1629,27 @@ async function parseAll() {
   ERR_ROWS = [];
   let hasBlockingError = false;
 
+  if (RECORDS.length) {
+    const seenWindow = new Set();
+    for (const r of RECORDS) {
+      const key = r._pageNo + '|' + r._rowNo + '|' + r.date;
+      if (seenWindow.has(key)) continue;
+      seenWindow.add(key);
+      if (typeof isDateInOvertimeEntryWindow !== 'function' || isDateInOvertimeEntryWindow(r.date)) continue;
+      const loc = `[${r.file}] ${r._pageNo}페이지 ${r._rowNo}번째 행${r.date ? ` (${r.date})` : ''}`;
+      hasBlockingError = true;
+      ERR_ROWS.push({ type: '입력 가능 기간 초과', status: '수정 필요',
+        name: r.name, empno: r.empno, date: r.date, time: `${r.start}~${r.end}`,
+        sugName: '', sugEmp: '', content: r.content || '', loc });
+      const windowMsg = typeof getOvertimeEntryWindowMessage === 'function'
+        ? getOvertimeEntryWindowMessage()
+        : '시스템 날짜 기준 전월 근무일자만 입력할 수 있습니다.';
+      errLines.push(`<div class="err-item" style="padding:6px 4px;border-radius:6px">
+        <div><span style="color:var(--red)">●</span> <b>입력 가능 기간 초과</b>: ${escHtml(r.name)} ${escHtml(r.date)} — ${escHtml(windowMsg)}<span style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;background:var(--red-bg);color:var(--red)">🚫 수정 필요</span><br><span style="color:var(--t3);padding-left:14px">↳ ${escHtml(loc)}</span></div>
+      </div>`);
+    }
+  }
+
   // 평일(휴일 아님) 09:00~18:00 정상근무 시간대 내부에 걸친 시간외 감지
   // → 유연근무 특성상 금요일 조기퇴근 후 추가근무만 정상 케이스이므로, 금요일은 제외하고
   //   월~목요일에 이런 시간외가 뜨면 날짜를 잘못 기재했을 가능성이 높아 차단한다.
@@ -1743,7 +1764,7 @@ async function parseAll() {
     document.getElementById('errModal').style.display = 'flex';
   }
 
-  // "이름 불일치"/"사번 오류 의심"/"정상근무시간대 시간외 감지"처럼 실제 오류일 가능성이 높은
+  // "입력 가능 기간 초과"/"이름 불일치"/"사번 오류 의심"/"정상근무시간대 시간외 감지"처럼 실제 오류일 가능성이 높은
   // 항목이 하나라도 있으면 이번 파싱 배치 전체를 목록에 올리지 않는다(일부만 빠지면 무엇이
   // 빠졌는지 구분하기 어려우므로). 사번+이름이 모두 명부에 없는 경우(퇴사자 등)만 있을 때는
   // 정상적으로 전체를 그대로 진행한다.
@@ -2652,6 +2673,22 @@ async function doDownloadERPExcel() {
   if (!personBlocks.length) {
     void appAlert({ type: 'warning', title: '저장 불가', message: '저장할 데이터가 없습니다.' });
     return;
+  }
+
+  if (typeof findRecordsOutsideOvertimeEntryWindow === 'function') {
+    const outside = findRecordsOutsideOvertimeEntryWindow(RECORDS);
+    if (outside.length) {
+      const sample = [...new Set(outside.map(r => r.date))].sort().slice(0, 5).join(', ');
+      const windowMsg = typeof getOvertimeEntryWindowMessage === 'function'
+        ? getOvertimeEntryWindowMessage()
+        : '시스템 날짜 기준 전월 근무일자만 입력할 수 있습니다.';
+      await appAlert({
+        type: 'error',
+        title: '저장 불가',
+        message: windowMsg + (sample ? `\n\n허용 기간을 벗어난 근무일자: ${sample}` : ''),
+      });
+      return;
+    }
   }
 
   const payload = serializeErpPayload(yr, mo, dates, personBlocks);

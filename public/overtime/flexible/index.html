@@ -365,6 +365,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer;accent-color:var(--bl
       <h4>✏️ 근무기록 수동 입력</h4>
       <p style="font-size:12px;color:var(--t3);margin:0 0 14px;line-height:1.6">
         한 건씩 직접 입력합니다. 이름 입력 시 사원명부에서 사번·부서가 자동 채워집니다.
+        근무일자는 시스템 날짜 기준 전월만 입력할 수 있습니다.
       </p>
       <div class="err-fix" id="manualEntryFix">
         <div class="manual-grid">
@@ -529,6 +530,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer;accent-color:var(--bl
 </div>
 
 <script src="dialog.js"></script>
+<script src="../entry-window.js"></script>
 <script src="app.js"></script>
 <script src="../unsaved-guard.js"></script>
 <script>window.MANUAL_ENTRY_SKIP_FRIDAY_0918=true;</script>

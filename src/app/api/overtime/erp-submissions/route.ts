@@ -13,6 +13,7 @@ import {
   formatDuplicateRecordsMessage,
 } from "@/lib/erp-submission-duplicates";
 import { listDistinctDepartments } from "@/lib/users-store";
+import { assertOvertimeEntryPeriod } from "@/lib/overtime-entry-window";
 import type { ErpSubmissionPayload, OvertimeType } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -73,6 +74,7 @@ export async function POST(request: Request) {
     };
 
     const payload = validatePayload(body);
+    assertOvertimeEntryPeriod(payload);
     const overtimeType = parseOvertimeType(body.overtimeType!)!;
 
     const existingSubmissions = await listErpSubmissions({

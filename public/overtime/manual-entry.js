@@ -69,6 +69,9 @@ function openManualEntryModal() {
     return;
   }
   resetManualEntryForm();
+  if (typeof applyOvertimeEntryDateLimits === "function") {
+    applyOvertimeEntryDateLimits(document.getElementById("manualDate"));
+  }
   document.getElementById("manualEntryModal").style.display = "flex";
 }
 
@@ -268,6 +271,18 @@ function submitManualEntry() {
       openDuplicateNamePicker(name, matches);
       return;
     }
+  }
+
+  if (typeof isDateInOvertimeEntryWindow === "function" && !isDateInOvertimeEntryWindow(date)) {
+    void appAlert({
+      type: "warning",
+      title: "근무일자 확인",
+      message:
+        typeof getOvertimeEntryWindowMessage === "function"
+          ? getOvertimeEntryWindowMessage()
+          : "시스템 날짜 기준 전월 근무일자만 입력할 수 있습니다.",
+    });
+    return;
   }
 
   if (!/^\d{2}:\d{2}$/.test(startRaw) || !/^\d{2}:\d{2}$/.test(endRaw)) {
