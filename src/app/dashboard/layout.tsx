@@ -6,6 +6,7 @@ import { InactivityLogout } from "@/components/inactivity-logout";
 import { OvertimeUnsavedGuard } from "@/components/overtime-unsaved-guard";
 import { syncSessionPresence } from "@/lib/access-log-store";
 import { getSessionUser } from "@/lib/auth";
+import { getEmployeeDirectoryBasisLabel } from "@/lib/employee-directory-store";
 import { getServerRequestMeta } from "@/lib/server-request-meta";
 import { getUserById } from "@/lib/users-store";
 
@@ -32,12 +33,19 @@ export default async function DashboardLayout({
     userAgent,
   });
 
+  let directoryBasisLabel: string | null = null;
+  try {
+    directoryBasisLabel = await getEmployeeDirectoryBasisLabel();
+  } catch {
+    directoryBasisLabel = null;
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F6F8]">
       <ActivityTracker />
       <InactivityLogout />
       <OvertimeUnsavedGuard />
-      <AppSidebar user={user} />
+      <AppSidebar user={user} directoryBasisLabel={directoryBasisLabel} />
       <main className="ml-[220px] min-h-screen flex-1 p-7">{children}</main>
     </div>
   );

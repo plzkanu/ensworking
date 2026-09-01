@@ -6,6 +6,10 @@ import {
   getPreviousMonthFirstDay,
   isEmployeeIncludedForPreviousMonth,
 } from "@/lib/employee-directory-filter";
+import {
+  addCalendarMonths,
+  getKoreaCalendarDate,
+} from "@/lib/overtime-entry-window";
 import type { EmployeeDirectoryEntry } from "./types";
 
 interface EmployeeDirectoryRow {
@@ -16,6 +20,45 @@ interface EmployeeDirectoryRow {
   emp_type_name: string | null;
   retire_date: string | null;
   synced_at: string | null;
+}
+
+/** updated_at(한국시간)의 전월을 `YYYY년 MM월`로 표시 */
+export function formatEmployeeDirectoryBasisLabel(
+  updatedAt: string | null | undefined,
+): string | null {
+  if (!updatedAt?.trim()) {
+    return null;
+  }
+  const parsed = new Date(updatedAt);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const { year, month } = getKoreaCalendarDate(parsed);
+  const prev = addCalendarMonths(year, month, -1);
+  return `${prev.year}년 ${String(prev.month).padStart(2, "0")}월`;
+}
+
+export async function getEmployeeDirectoryBasisLabel(): Promise<string | null> {
+  if (!isSupabaseConfigured()) {
+    return null;
+  }
+
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from("employee_directory")
+    .select("updated_at")
+    .not("updated_at", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(formatSupabaseNetworkError(error.message));
+  }
+
+  return formatEmployeeDirectoryBasisLabel(
+    (data as { updated_at?: string | null } | null)?.updated_at ?? null,
+  );
 }
 
 function mapRow(row: EmployeeDirectoryRow): EmployeeDirectoryEntry {

@@ -18,6 +18,7 @@ import type { SessionUser } from "@/lib/types";
 
 interface AppSidebarProps {
   user: SessionUser;
+  directoryBasisLabel?: string | null;
 }
 
 function isNavActive(pathname: string, href: string) {
@@ -44,7 +45,7 @@ function buildInitialOpenGroups(pathname: string): Record<string, boolean> {
   return open;
 }
 
-export function AppSidebar({ user }: AppSidebarProps) {
+export function AppSidebar({ user, directoryBasisLabel }: AppSidebarProps) {
   const pathname = usePathname();
   const items = mainNavItems.filter(
     (item) => !item.adminOnly || user.role === "admin",
@@ -116,6 +117,11 @@ export function AppSidebar({ user }: AppSidebarProps) {
           <SoosanLogo variant="sidebar" height={26} />
         </Link>
         <p className="mt-2 text-center text-[11px] text-[#BCC0C8]">시간외근무 ERP</p>
+        {directoryBasisLabel ? (
+          <p className="mt-1 text-center text-[11px] text-[#BCC0C8]">
+            사원명부 기준 : {directoryBasisLabel}
+          </p>
+        ) : null}
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3">
