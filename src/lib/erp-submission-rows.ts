@@ -339,6 +339,95 @@ export function formatErpSubmitter(row: ErpSubmissionExcelRow): string {
   return row.submittedByDepartment || "-";
 }
 
+export const ERP_LIST_EMPTY_FILTER_LABEL = "(빈 값)";
+
+export type ErpListColumnFilters = Partial<
+  Record<ErpListColumnKey, Set<string>>
+>;
+
+export function getErpListFilterValue(
+  column: ErpListColumnKey,
+  row: ErpSubmissionExcelRow,
+): string {
+  switch (column) {
+    case "seq":
+      return String(row.seq);
+    case "overtimeType":
+      return row.overtimeTypeLabel;
+    case "name":
+      return row.name;
+    case "dept":
+      return row.dept;
+    case "empno":
+      return row.empno;
+    case "date":
+      return row.dayKr ? `${row.date} (${row.dayKr})` : row.date;
+    case "start":
+      return row.start;
+    case "end":
+      return row.end;
+    case "hours":
+      return String(row.hours);
+    case "workType":
+      return row.workType;
+    case "nightLabel":
+      return row.nightLabel;
+    case "holLabel":
+      return row.holLabel;
+    case "notes":
+      return row.notes;
+    case "submitter":
+      return formatErpSubmitter(row);
+    case "file":
+      return row.file;
+  }
+}
+
+export function formatErpListFilterLabel(value: string): string {
+  return value.trim() ? value : ERP_LIST_EMPTY_FILTER_LABEL;
+}
+
+export function collectErpListFilterOptions(
+  rows: ErpSubmissionExcelRow[],
+  column: ErpListColumnKey,
+): string[] {
+  const values = new Set<string>();
+  for (const row of rows) {
+    values.add(getErpListFilterValue(column, row));
+  }
+  return [...values].sort((a, b) => {
+    if (!a && b) return 1;
+    if (a && !b) return -1;
+    return a.localeCompare(b, "ko", { numeric: true });
+  });
+}
+
+export function rowMatchesColumnFilters(
+  row: ErpSubmissionExcelRow,
+  filters: ErpListColumnFilters,
+): boolean {
+  for (const column of Object.keys(filters) as ErpListColumnKey[]) {
+    const selected = filters[column];
+    if (!selected) {
+      continue;
+    }
+    if (!selected.has(getErpListFilterValue(column, row))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function filterErpListRows(
+  rows: ErpSubmissionExcelRow[],
+  filters: ErpListColumnFilters,
+): ErpSubmissionExcelRow[] {
+  if (Object.keys(filters).length === 0) {
+    return rows;
+  }
+  return rows.filter((row) => rowMatchesColumnFilters(row, filters));
+}
+
 export function erpRowToArray(
   row: ErpSubmissionExcelRow,
   options?: { includeSubmitter?: boolean },

@@ -2,14 +2,18 @@
 
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useState,
   type DragEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
+import { ErpListColumnFilterMenu, ErpListFilterIcon } from "@/components/admin/erp-list-column-filter";
 import {
   ERP_LIST_COLUMN_LABELS,
+  filterErpListRows,
   flattenSubmissionsToRows,
   formatErpSubmitter,
   getErpListColumnKeys,
@@ -18,6 +22,7 @@ import {
   loadErpListColumnOrder,
   normalizeErpListColumnOrder,
   saveErpListColumnOrder,
+  type ErpListColumnFilters,
   type ErpListColumnKey,
   type ErpSubmissionExcelRow,
 } from "@/lib/erp-submission-rows";
@@ -226,6 +231,9 @@ export function ErpSubmissionResultTable({
   );
   const [dragOverColumn, setDragOverColumn] =
     useState<ErpListColumnKey | null>(null);
+  const [columnFilters, setColumnFilters] = useState<ErpListColumnFilters>({});
+  const [openFilter, setOpenFilter] = useState<ErpListColumnKey | null>(null);
+  const [filterAnchor, setFilterAnchor] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     setColumnOrder(loadErpListColumnOrder(showSubmitter));
@@ -235,7 +243,72 @@ export function ErpSubmissionResultTable({
     saveErpListColumnOrder(columnOrder);
   }, [columnOrder]);
 
-  const rows = flattenSubmissionsToRows(submissions);
+  useEffect(() => {
+    setColumnFilters({});
+    setOpenFilter(null);
+    setFilterAnchor(null);
+  }, [submissions]);
+
+  const allRows = useMemo(
+    () => flattenSubmissionsToRows(submissions),
+    [submissions],
+  );
+  const rows = useMemo(
+    () => filterErpListRows(allRows, columnFilters),
+    [allRows, columnFilters],
+  );
+  const filterOptionRows = useMemo(() => {
+    if (!openFilter) {
+      return allRows;
+    }
+    const rest: ErpListColumnFilters = { ...columnFilters };
+    delete rest[openFilter];
+    return filterErpListRows(allRows, rest);
+  }, [allRows, columnFilters, openFilter]);
+  const activeFilterCount = Object.keys(columnFilters).length;
+
+  useEffect(() => {
+    onPageChange?.(1);
+  }, [columnFilters, onPageChange]);
+
+  const closeFilter = useCallback(() => {
+    setOpenFilter(null);
+    setFilterAnchor(null);
+  }, []);
+
+  function handleFilterChange(
+    column: ErpListColumnKey,
+    selected: Set<string> | null,
+  ) {
+    setColumnFilters((prev) => {
+      const next: ErpListColumnFilters = { ...prev };
+      if (!selected) {
+        delete next[column];
+      } else {
+        next[column] = selected;
+      }
+      return next;
+    });
+  }
+
+  function toggleFilter(
+    column: ErpListColumnKey,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (openFilter === column) {
+      closeFilter();
+      return;
+    }
+    setOpenFilter(column);
+    setFilterAnchor(event.currentTarget);
+  }
+
+  function resetFilters() {
+    setColumnFilters({});
+    closeFilter();
+  }
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(Math.max(page, 1), totalPages);
   const pageStart = (safePage - 1) * pageSize;
@@ -289,6 +362,7 @@ export function ErpSubmissionResultTable({
     column: ErpListColumnKey,
   ) {
     setDraggingColumn(column);
+    closeFilter();
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", column);
   }
@@ -327,7 +401,7 @@ export function ErpSubmissionResultTable({
     setDragOverColumn(null);
   }
 
-  if (rows.length === 0) {
+  if (allRows.length === 0) {
     return (
       <p className="rounded-xl border border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-500 shadow-sm">
         조회된 제출 내역이 없습니다.
@@ -366,13 +440,30 @@ export function ErpSubmissionResultTable({
                     title="드래그하여 열 순서 변경"
                     className={`cursor-grab border border-[#2170D8] px-2 py-2 text-center font-semibold whitespace-nowrap select-none active:cursor-grabbing ${
                       isDragging ? "opacity-50" : ""
-                    } ${isDragOver ? "ring-2 ring-inset ring-white/80" : ""}`}
+                    } ${isDragOver ? "ring-2 ring-inset ring-white/80" : ""} ${
+                      columnFilters[column] ? "bg-[#1E6FE0]" : ""
+                    }`}
                   >
                     <span className="inline-flex items-center gap-1">
                       <span aria-hidden className="text-[10px] text-white/70">
                         ⋮⋮
                       </span>
                       {ERP_LIST_COLUMN_LABELS[column]}
+                      <button
+                        type="button"
+                        draggable={false}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onDragStart={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => toggleFilter(column, event)}
+                        aria-label={`${ERP_LIST_COLUMN_LABELS[column]} 필터`}
+                        aria-expanded={openFilter === column}
+                        className="rounded p-0.5 transition hover:bg-white/15"
+                      >
+                        <ErpListFilterIcon active={Boolean(columnFilters[column])} />
+                      </button>
                     </span>
                   </th>
                 );
@@ -380,7 +471,17 @@ export function ErpSubmissionResultTable({
             </tr>
           </thead>
           <tbody>
-            {paginatedRows.map((row, index) => {
+            {paginatedRows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={visibleColumns.length + (selectable ? 1 : 0)}
+                  className="border border-[#E2E5EA] px-4 py-8 text-center text-sm text-slate-500"
+                >
+                  필터 조건에 맞는 데이터가 없습니다.
+                </td>
+              </tr>
+            ) : (
+              paginatedRows.map((row, index) => {
               const flags = getErpRowStyleFlags(row);
               const bgClass = rowBackgroundClass(row, index);
               const rowKey = getErpSubmissionRowKey(row);
@@ -406,24 +507,46 @@ export function ErpSubmissionResultTable({
                   ))}
                 </tr>
               );
-            })}
+            })
+            )}
           </tbody>
         </table>
       </div>
+      {openFilter && filterAnchor ? (
+        <ErpListColumnFilterMenu
+          column={openFilter}
+          label={ERP_LIST_COLUMN_LABELS[openFilter]}
+          rows={filterOptionRows}
+          filters={columnFilters}
+          onChange={handleFilterChange}
+          onClose={closeFilter}
+          anchor={filterAnchor}
+        />
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
         <div>
           <p>
-            전체 {rows.length.toLocaleString()}건 중{" "}
+            {activeFilterCount > 0
+              ? `전체 ${allRows.length.toLocaleString()}건 중 필터 ${rows.length.toLocaleString()}건`
+              : `전체 ${rows.length.toLocaleString()}건`}
             {rows.length === 0
-              ? "0"
-              : `${(pageStart + 1).toLocaleString()}-${Math.min(pageStart + pageSize, rows.length).toLocaleString()}`}
-            건 표시
+              ? " 표시"
+              : ` · ${(pageStart + 1).toLocaleString()}-${Math.min(pageStart + pageSize, rows.length).toLocaleString()}건 표시`}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            열 제목을 드래그하면 표시 순서를 변경할 수 있습니다.
+            열 제목을 드래그하면 표시 순서를 변경할 수 있습니다. 필터 아이콘으로 열별 값을 걸러볼 수 있습니다.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {activeFilterCount > 0 ? (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1 text-sm text-slate-700 transition hover:bg-slate-100"
+            >
+              필터 초기화
+            </button>
+          ) : null}
           <label className="flex items-center gap-2">
             <span className="whitespace-nowrap text-slate-600">표시 개수</span>
             <select
